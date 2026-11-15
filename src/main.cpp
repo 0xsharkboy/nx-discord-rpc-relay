@@ -182,19 +182,21 @@ int main() {
         int sig = 0;
         sigwait(&signals, &sig);
         stop.set();
-        // A stop() issued before listen_after_bind() marks the server running would be lost.
-        svr.wait_until_ready();
-        svr.stop();
+        // A stop() issued before listen_after_bind() marks the server running would be lost. Not
+        // wait_until_ready(): it spins forever when the accept loop has already failed.
+        while (!http_done && !svr.is_running()) std::this_thread::sleep_for(1ms);
+        if (!http_done) svr.stop();
     });
 
     std::thread http([&] {
         svr.listen_after_bind();
-        if (!stop.is_set()) {
+        const bool unexpected = !stop.is_set();
+        http_done = true;
+        if (unexpected) {
             listen_failed = true;
             std::cerr << "relay: the HTTP server stopped unexpectedly\n";
             ::kill(::getpid(), SIGTERM);
         }
-        http_done = true;
     });
 
     std::thread jobs([&] {

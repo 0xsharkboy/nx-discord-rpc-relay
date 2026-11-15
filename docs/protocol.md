@@ -11,7 +11,7 @@ Rich Presence.
 - Request and response bodies are JSON (`Content-Type: application/json`), except icon uploads
   (raw JPEG bytes), icon downloads (`image/jpeg`) and `GET /healthz` (`text/plain`).
 - Every request with a body must send `Content-Length`. Chunked uploads
-  (`Transfer-Encoding`) are refused with `411 length_required`. A request without
+  (`Transfer-Encoding`) are refused with `411 length_required` and `Connection: close`. A request without
   `Content-Length` is treated as having an empty body.
 - Any request body over 262144 bytes is discarded unprocessed and refused with `413 too_large`,
   before authentication or any other check.
@@ -73,6 +73,8 @@ Clients must branch on `error`, never on `message`.
 | `POST /v1/link` | 10 per hour | client IP |
 | `POST /v1/link/{link_id}/poll` | 720 per hour | client IP |
 | `PUT /v1/icons/{title_id}` | 30 per hour | API key (the admin key is exempt) |
+
+IPv6 clients are counted per /64 prefix.
 
 Limits are token buckets: the full allowance is available at once, and one request comes back
 every hour / limit (every 6 min for `POST /v1/link`). A refused request gets

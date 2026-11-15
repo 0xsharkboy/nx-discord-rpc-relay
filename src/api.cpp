@@ -1,5 +1,7 @@
 #include "api.hpp"
 
+#include <algorithm>
+#include <arpa/inet.h>
 #include <cctype>
 #include <chrono>
 #include <fstream>
@@ -111,6 +113,21 @@ std::string client_ip(const Deps& d, const Request& req) {
     return req.remote_addr;
 }
 
+// One IPv6 host usually owns a whole /64, so keying on the full address would let it rotate freely.
+std::string ip_rate_key(const std::string& ip) {
+    if (ip.find(':') == std::string::npos) return ip;
+    in6_addr a{};
+    if (inet_pton(AF_INET6, ip.c_str(), &a) != 1) return ip;
+    char buf[INET6_ADDRSTRLEN] = {};
+    if (IN6_IS_ADDR_V4MAPPED(&a)) {
+        if (!inet_ntop(AF_INET, &a.s6_addr[12], buf, sizeof buf)) return ip;
+        return buf;
+    }
+    std::fill(std::begin(a.s6_addr) + 8, std::end(a.s6_addr), uint8_t{0});
+    if (!inet_ntop(AF_INET6, &a, buf, sizeof buf)) return ip;
+    return std::string(buf) + "/64";
+}
+
 bool rate_limited(RateLimiter& limiter, const std::string& key, Response& res) {
     auto retry = limiter.take(key);
     if (!retry) return false;
@@ -164,7 +181,7 @@ std::optional<PresenceUpdate> parse_presence(const std::string& body, std::strin
 }
 
 void handle_link_start(Deps& d, const Request& req, Response& res) {
-    if (rate_limited(d.link_limiter, client_ip(d, req), res)) return;
+    if (rate_limited(d.link_limiter, ip_rate_key(client_ip(d, req)), res)) return;
     auto start = d.links.start();
     if (!start) return send_error(res, 502, "discord_unavailable", "Discord is unavailable, retry later");
     send_json(res, 200,
@@ -176,7 +193,7 @@ void handle_link_start(Deps& d, const Request& req, Response& res) {
 }
 
 void handle_link_poll(Deps& d, const Request& req, Response& res) {
-    if (rate_limited(d.poll_limiter, client_ip(d, req), res)) return;
+    if (rate_limited(d.poll_limiter, ip_rate_key(client_ip(d, req)), res)) return;
     auto poll = d.links.poll(req.path_params.at("id"));
     switch (poll.state) {
     case LinkPoll::Pending: return send_json(res, 200, json{{"state", "pending"}});
@@ -296,6 +313,8 @@ void register_routes(httplib::Server& svr, Deps& d) {
         t_request_start = d.monotonic_ms();
         // This httplib version enforces the payload limit only on Content-Length bodies.
         if (req.has_header("Transfer-Encoding")) {
+            // The unread chunked body would otherwise be parsed as the next request.
+            res.set_header("Connection", "close");
             send_error(res, 411, "length_required", "Send the body with a Content-Length header");
             return HandlerResponse::Handled;
         }

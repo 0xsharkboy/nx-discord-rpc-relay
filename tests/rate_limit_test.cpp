@@ -76,3 +76,26 @@ TEST_CASE("rate limit: a pruned key starts with a full bucket") {
     CHECK_FALSE(rl.take("a"));
     CHECK(rl.take("a"));
 }
+
+TEST_CASE("rate limit: a full table refuses new keys but keeps serving known ones") {
+    int64_t now = 0;
+    RateLimiter rl(5, 60'000, [&] { return now; }, 3);
+    CHECK_FALSE(rl.take("a"));
+    CHECK_FALSE(rl.take("b"));
+    CHECK_FALSE(rl.take("c"));
+    auto refused = rl.take("d");
+    REQUIRE(refused);
+    CHECK(*refused >= 1);
+    CHECK(rl.size() == 3);
+    CHECK_FALSE(rl.take("a"));
+
+    now = 1000;
+    auto later = rl.take("e");
+    REQUIRE(later);
+    CHECK(*later == 59);
+    CHECK(rl.size() == 3);
+
+    now = 60'000;
+    CHECK_FALSE(rl.take("d"));
+    CHECK_FALSE(rl.take("e"));
+}

@@ -32,6 +32,9 @@ find_package(OpenSSL REQUIRED)
 
 set(HTTPLIB_REQUIRE_OPENSSL ON)
 set(HTTPLIB_COMPILE OFF)
+# Decompressed request bodies would bypass the wire payload limit.
+set(HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
 set(DOCTEST_NO_INSTALL ON)
 set(JSON_Install OFF)
 FetchContent_MakeAvailable(doctest nlohmann_json httplib stb)

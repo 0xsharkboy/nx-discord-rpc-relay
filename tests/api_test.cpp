@@ -464,6 +464,14 @@ TEST_CASE("api: malicious icon uploads are refused") {
     check_error(f.put_icon(key, "not-a-tid", make_jpeg(256, 256, 1)), 400, "invalid_icon");
     check_error(f.cli->Get("/icons/0000000000000000.jpg"), 404, "not_found");
     check_error(f.cli->Get(std::string("/icons/") + kTid + ".jpg"), 404, "not_found");
+    CHECK(fs::is_empty(f.root / "icons"));
+
+    auto other = f.link("43", "bob");
+    auto vote = f.put_icon(other, kTid, make_jpeg(256, 256, 1));
+    REQUIRE(vote);
+    CHECK(vote->status == 202);
+    CHECK(body_of(vote) == json{{"status", "pending"}, {"votes", 1}, {"needed", 2}});
+    CHECK(fs::is_empty(f.root / "icons"));
 }
 
 TEST_CASE("api: admin uploads publish at once, admin delete unpublishes and blocks") {
@@ -560,4 +568,34 @@ TEST_CASE("api: with trust_proxy an oversized first hop falls back to the peer a
         REQUIRE(f.cli->Post("/v1/link", {{"X-Forwarded-For", std::string(46 + i, 'a')}}, "", "text/plain")
                     ->status == 200);
     check_error(f.cli->Post("/v1/link"), 429, "rate_limited");
+}
+
+TEST_CASE("api: IPv6 clients are limited per /64, IPv4-mapped addresses as IPv4") {
+    Fixture f(true);
+    for (int i = 0; i < 10; ++i)
+        REQUIRE(f.cli->Post("/v1/link", {{"X-Forwarded-For", "2001:db8:1:2::" + std::to_string(i + 1)}}, "",
+                            "text/plain")
+                    ->status == 200);
+    check_error(f.cli->Post("/v1/link", {{"X-Forwarded-For", "2001:db8:1:2:ffff:1:2:3"}}, "", "text/plain"), 429,
+                "rate_limited");
+    CHECK(f.cli->Post("/v1/link", {{"X-Forwarded-For", "2001:db8:1:3::1"}}, "", "text/plain")->status == 200);
+
+    for (int i = 0; i < 10; ++i)
+        REQUIRE(f.cli->Post("/v1/link", {{"X-Forwarded-For", "9.9.9.9"}}, "", "text/plain")->status == 200);
+    check_error(f.cli->Post("/v1/link", {{"X-Forwarded-For", "::ffff:9.9.9.9"}}, "", "text/plain"), 429,
+                "rate_limited");
+}
+
+TEST_CASE("api: a chunked body is refused and the connection is closed") {
+    Fixture f;
+    auto r = f.cli->Put(
+        "/v1/presence", bearer("x"),
+        [](size_t, httplib::DataSink& sink) {
+            sink.write("{}", 2);
+            sink.done();
+            return true;
+        },
+        "application/json");
+    check_error(r, 411, "length_required");
+    CHECK(r->get_header_value("Connection") == "close");
 }
