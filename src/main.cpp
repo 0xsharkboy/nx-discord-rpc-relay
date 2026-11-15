@@ -157,6 +157,7 @@ int main() {
         backend, *db, cfg.token_key, cfg.public_base_url,
         [&icons](const std::string& tid) { return icons.published_path(tid).has_value(); }, unix_ms);
     icons.on_published = [&presence](const std::string& tid) { presence.icon_published(tid); };
+    icons.on_unpublished = [&presence](const std::string& tid) { presence.icon_published(tid); };
     Links links(oauth, *db, cfg.token_key, unix_ms);
     links.on_relinked = [&presence](const std::string& id) { presence.drop(id); };
     Refresher refresher(oauth, *db, cfg.token_key, presence, unix_s);

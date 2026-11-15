@@ -118,6 +118,7 @@ struct Fixture {
             backend, *db, cfg.token_key, cfg.public_base_url,
             [this](const std::string& tid) { return icons->published_path(tid).has_value(); }, now_ms);
         icons->on_published = [this](const std::string& tid) { presence->icon_published(tid); };
+        icons->on_unpublished = [this](const std::string& tid) { presence->icon_published(tid); };
         links->on_relinked = [this](const std::string& id) { presence->drop(id); };
         link_limiter = std::make_unique<RateLimiter>(10, 3'600'000, now_ms);
         poll_limiter = std::make_unique<RateLimiter>(720, 3'600'000, now_ms);
@@ -499,6 +500,25 @@ TEST_CASE("api: admin uploads publish at once, admin delete unpublishes and bloc
     check_error(f.cli->Delete(std::string("/v1/icons/") + kTid, bearer(kAdminKey)), 404, "not_found");
 
     check_error(f.put_icon(key, kTid, jpg), 400, "blocked");
+}
+
+TEST_CASE("api: admin delete of an icon puts the logo back on presences showing it") {
+    Fixture f;
+    auto key = f.link();
+    REQUIRE(f.put_icon(kAdminKey, kTid, make_jpeg(256, 256, 2))->status == 200);
+    REQUIRE(f.put_presence(key, std::string(R"({"name":"Zelda","title_id":")") + kTid + "\"}")->status == 204);
+    f.presence->tick();
+    REQUIRE(f.presence->current("42"));
+    CHECK(f.presence->current("42")->large_image == std::string("https://x.test/icons/") + kTid + ".jpg");
+
+    REQUIRE(f.cli->Delete(std::string("/v1/icons/") + kTid, bearer(kAdminKey))->status == 204);
+    f.now += 5000;
+    f.backend.reset();
+    f.presence->tick();
+    auto sets = f.backend.calls(Kind::Set, "42");
+    REQUIRE(sets.size() == 1);
+    CHECK(sets[0].spec->large_image == "switch_logo");
+    CHECK(f.presence->current("42")->large_image == "switch_logo");
 }
 
 TEST_CASE("api: admin endpoints are closed when no admin key is configured") {

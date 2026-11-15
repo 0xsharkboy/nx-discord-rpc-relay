@@ -39,6 +39,8 @@ public:
 
     // Fires once per publish or replace, never for Pending, outside the internal lock.
     std::function<void(const std::string& title_id)> on_published;
+    // Fires after admin_delete removed a published icon, outside the internal lock.
+    std::function<void(const std::string& title_id)> on_unpublished;
 
 private:
     std::string path_for(const std::string& tid) const;

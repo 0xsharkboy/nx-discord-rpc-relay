@@ -270,3 +270,17 @@ TEST_CASE("icons: write failure throws and publishes nothing") {
     CHECK_FALSE(e.icons->published_path(TID));
     CHECK(e.fired == 0);
 }
+
+TEST_CASE("icons: admin_delete fires on_unpublished once, outside the lock") {
+    Env e;
+    std::vector<std::string> fired;
+    e.icons->on_unpublished = [&](const std::string& t) {
+        fired.push_back(t);
+        CHECK_FALSE(e.icons->published_path(t));
+    };
+    CHECK_FALSE(e.icons->admin_delete(TID));
+    CHECK(fired.empty());
+    CHECK(e.icons->submit(TID, make_jpeg(256, 256, 1), "", true).result == IconResult::Published);
+    CHECK(e.icons->admin_delete("0100a0d02127e000"));
+    CHECK(fired == std::vector<std::string>{TID});
+}

@@ -145,13 +145,16 @@ std::optional<std::string> Icons::published_path(std::string_view title_id) {
 bool Icons::admin_delete(std::string_view title_id) {
     if (!valid_title_id(title_id)) return false;
     const std::string tid = normalize_title_id(title_id);
-    std::lock_guard lk(mu_);
-    auto rec = db_.published_icon(tid);
-    if (!rec) return false;
-    db_.unpublish_icon(tid);
-    db_.block_hash(rec->sha256);
-    std::error_code ec;
-    fs::remove(path_for(tid), ec);
+    {
+        std::lock_guard lk(mu_);
+        auto rec = db_.published_icon(tid);
+        if (!rec) return false;
+        db_.unpublish_icon(tid);
+        db_.block_hash(rec->sha256);
+        std::error_code ec;
+        fs::remove(path_for(tid), ec);
+    }
+    if (on_unpublished) on_unpublished(tid);
     return true;
 }
 

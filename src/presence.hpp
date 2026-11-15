@@ -35,6 +35,7 @@ public:
     void put(const std::string& discord_id, const PresenceUpdate&);
     void clear(const std::string& discord_id);
     void drop(const std::string& discord_id);
+    // Re-evaluates the image of every user showing the title; call it on publish and unpublish.
     void icon_published(const std::string& title_id);
     void token_refreshed(const std::string& discord_id);
     void tick();
