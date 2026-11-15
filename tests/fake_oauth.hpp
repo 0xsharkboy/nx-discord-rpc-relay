@@ -21,6 +21,7 @@ public:
     RefreshResult refresh_default{RefreshResult::State::Transient, std::nullopt};
 
     bool throw_on_poll = false;
+    std::string throw_on_refresh_token;
     int authorize_calls = 0, poll_calls = 0, refresh_calls = 0;
     std::vector<std::string> polled_codes, refreshed_tokens, revoked;
 
@@ -47,6 +48,8 @@ public:
         std::lock_guard lk(mu_);
         ++refresh_calls;
         refreshed_tokens.push_back(refresh_token);
+        if (!throw_on_refresh_token.empty() && refresh_token == throw_on_refresh_token)
+            throw std::runtime_error("refresh failed");
         return pop(refresh_results, refresh_default);
     }
     void revoke(const std::string& token) override {
