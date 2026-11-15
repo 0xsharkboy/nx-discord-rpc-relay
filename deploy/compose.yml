@@ -5,9 +5,14 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
+    # The image runs as uid 1000 (user "ubuntu"). Create ./data owned by that uid before the first
+    # start, or set `user: "<uid>:<gid>"` here to match its owner.
     volumes:
       - ./data:/data
     # Shutdown clears presences and may wait for a refresh run.
     stop_grace_period: 30s
-    # The image runs as uid 1000 (user "ubuntu"). If ./data is owned by another uid on the host,
-    # either chown it to 1000 or set `user: "<uid>:<gid>"` here.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
