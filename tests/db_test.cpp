@@ -211,3 +211,26 @@ TEST_CASE("db: reopening keeps data") {
 TEST_CASE("db: open fails with runtime_error on an unusable path") {
     CHECK_THROWS_AS(Db::open("/nonexistent-dir-xyz/sub/x.db"), std::runtime_error);
 }
+
+TEST_CASE("db: empty blobs and strings bind as empty values, not NULL") {
+    TempDb t;
+    auto db = t.open();
+    User u;
+    u.discord_id = "1";
+    u.key_hash = "h1";
+    REQUIRE_NOTHROW(db->upsert_user(u));
+    auto got = db->user_by_discord_id("1");
+    REQUIRE(got);
+    CHECK(got->username.empty());
+    CHECK(got->access_sealed.empty());
+    CHECK(got->refresh_sealed.empty());
+    db->upsert_user(make_user("2", "h2"));
+    REQUIRE_NOTHROW(db->update_tokens("2", std::span<const uint8_t>{}, std::span<const uint8_t>{}, 7));
+    auto two = db->user_by_discord_id("2");
+    REQUIRE(two);
+    CHECK(two->access_sealed.empty());
+    CHECK(two->refresh_sealed.empty());
+    CHECK(two->access_expires_at == 7);
+    CHECK_FALSE(db->user_by_key_hash(std::string_view{}));
+    CHECK_FALSE(db->is_blocked(std::string_view{}));
+}

@@ -34,11 +34,16 @@ public:
     Stmt& operator=(const Stmt&) = delete;
 
     Stmt& text(int i, std::string_view v) {
-        check(sqlite3_bind_text(s_, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT));
+        check(sqlite3_bind_text(s_, i, v.data() ? v.data() : "", static_cast<int>(v.size()),
+                                 SQLITE_TRANSIENT));
         return *this;
     }
     Stmt& blob(int i, std::span<const uint8_t> v) {
-        check(sqlite3_bind_blob(s_, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT));
+        // A null pointer binds SQL NULL regardless of length.
+        if (v.empty())
+            check(sqlite3_bind_zeroblob(s_, i, 0));
+        else
+            check(sqlite3_bind_blob(s_, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT));
         return *this;
     }
     Stmt& i64(int i, int64_t v) {
