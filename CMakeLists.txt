@@ -52,6 +52,7 @@ add_library(relay_core STATIC
     src/crypto.cpp
     src/db.cpp
     src/icons.cpp
+    src/links.cpp
     src/oauth.cpp
     src/stb_impl.cpp
 )

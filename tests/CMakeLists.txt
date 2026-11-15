@@ -4,6 +4,7 @@ add_executable(relay_tests
     crypto_test.cpp
     db_test.cpp
     icons_test.cpp
+    links_test.cpp
     oauth_test.cpp
 )
 target_link_libraries(relay_tests PRIVATE relay_core doctest::doctest)
