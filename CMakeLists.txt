@@ -50,6 +50,7 @@ add_library(relay_core STATIC
     src/version.cpp
     src/config.cpp
     src/crypto.cpp
+    src/db.cpp
 )
 target_include_directories(relay_core PUBLIC src)
 target_link_libraries(relay_core PUBLIC
