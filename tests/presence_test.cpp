@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <set>
+#include <sqlite3.h>
 #include <unistd.h>
 
 #include "crypto.hpp"
@@ -371,4 +372,60 @@ TEST_CASE("presence: token_refreshed while waiting to reconnect does nothing") {
     f.presence->token_refreshed("42");
     f.advance(1000);
     CHECK(f.backend.calls().empty());
+}
+
+TEST_CASE("presence: an expired access token waits for the refresher instead of connecting") {
+    Fixture f;
+    f.db->update_tokens("42", seal(f.key, "access-42"), seal(f.key, "refresh-42"), f.now / 1000);
+    f.put("42", "Zelda");
+    f.presence->tick();
+    f.advance(29999);
+    CHECK(f.backend.calls().empty());
+    CHECK_FALSE(f.db->user_by_discord_id("42")->link_broken);
+    f.db->update_tokens("42", seal(f.key, "access-42-new"), seal(f.key, "refresh-42-new"), 1'900'000'000);
+    f.put("42", "Zelda");
+    f.advance(1);
+    auto calls = f.backend.calls();
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[0].kind == Kind::Connect);
+    CHECK(calls[0].token == "access-42-new");
+    CHECK(calls[1].kind == Kind::Set);
+}
+
+namespace {
+// A second connection hides the users table, so every Db user query throws.
+void hide_users_table(const std::filesystem::path& path, bool hide) {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(path.string().c_str(), &raw) == SQLITE_OK);
+    const char* sql = hide ? "ALTER TABLE users RENAME TO users_hidden" : "ALTER TABLE users_hidden RENAME TO users";
+    CHECK(sqlite3_exec(raw, sql, nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(raw);
+}
+}  // namespace
+
+TEST_CASE("presence: a db error delays the connect without stopping the tick") {
+    Fixture f;
+    hide_users_table(f.path, true);
+    CHECK_THROWS(f.db->user_by_discord_id("42"));
+    f.put("42", "Zelda");
+    CHECK_NOTHROW(f.presence->tick());
+    CHECK(f.backend.calls().empty());
+    CHECK(f.backend.run_callbacks_count() == 1);
+    hide_users_table(f.path, false);
+    f.put("42", "Zelda");
+    f.advance(29999);
+    CHECK(f.backend.calls().empty());
+    f.advance(1);
+    CHECK(f.backend.calls(Kind::Connect, "42").size() == 1);
+}
+
+TEST_CASE("presence: a db error on an auth loss still forgets the user") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.presence->tick();
+    hide_users_table(f.path, true);
+    CHECK_NOTHROW(f.backend.lose("42", true));
+    CHECK_FALSE(f.presence->current("42"));
+    CHECK(f.backend.calls(Kind::Disconnect, "42").size() == 1);
+    hide_users_table(f.path, false);
 }

@@ -1,6 +1,7 @@
 #include "presence.hpp"
 
 #include <cstdlib>
+#include <iostream>
 #include <utility>
 
 #include "crypto.hpp"
@@ -135,7 +136,8 @@ void Presence::apply(const Command& c, int64_t now) {
     case Command::Token: {
         auto it = states_.find(c.key);
         if (it == states_.end() || !it->second.connected) break;
-        if (auto token = access_token(c.key)) backend_.update_token(c.key, *token);
+        auto t = access_token(c.key, now);
+        if (t.state == TokenLookup::Ready) backend_.update_token(c.key, t.token);
         break;
     }
     }
@@ -152,9 +154,13 @@ bool Presence::step(const std::string& id, UserState& st, int64_t now) {
     if (!st.desired) return true;
     if (!st.connected) {
         if (st.last_connect_ms && now - *st.last_connect_ms < kReconnectIntervalMs) return true;
-        auto token = access_token(id);
-        if (!token) return false;
-        backend_.connect(id, *token);
+        auto t = access_token(id, now);
+        if (t.state == TokenLookup::Gone) return false;
+        if (t.state == TokenLookup::Later) {
+            st.last_connect_ms = now;
+            return true;
+        }
+        backend_.connect(id, t.token);
         st.connected = true;
         st.last_connect_ms = now;
     }
@@ -190,7 +196,11 @@ void Presence::connection_lost(const std::string& id, bool auth_failed) {
     if (it == states_.end() || !it->second.connected) return;
     backend_.disconnect(id);
     if (auth_failed) {
-        db_.set_link_broken(id, true);
+        try {
+            db_.set_link_broken(id, true);
+        } catch (const std::exception& e) {
+            std::cerr << "relay: presence could not mark " << id << " as link broken: " << e.what() << '\n';
+        }
         forget(id);
         return;
     }
@@ -199,10 +209,21 @@ void Presence::connection_lost(const std::string& id, bool auth_failed) {
     publish(id, std::nullopt);
 }
 
-std::optional<std::string> Presence::access_token(const std::string& id) {
-    auto user = db_.user_by_discord_id(id);
-    if (!user || user->link_broken) return std::nullopt;
-    return open(key_, user->access_sealed);
+// An expired access token is not a broken link: the refresher will store a fresh one, and
+// connecting with the stale one would end in an auth failure that marks the link broken.
+Presence::TokenLookup Presence::access_token(const std::string& id, int64_t now) {
+    std::optional<User> user;
+    try {
+        user = db_.user_by_discord_id(id);
+    } catch (const std::exception& e) {
+        std::cerr << "relay: presence could not load user " << id << ": " << e.what() << '\n';
+        return {TokenLookup::Later, {}};
+    }
+    if (!user || user->link_broken) return {TokenLookup::Gone, {}};
+    if (user->access_expires_at <= now / 1000) return {TokenLookup::Later, {}};
+    auto token = open(key_, user->access_sealed);
+    if (!token) return {TokenLookup::Gone, {}};
+    return {TokenLookup::Ready, std::move(*token)};
 }
 
 std::string Presence::image_for(const std::optional<std::string>& tid) {

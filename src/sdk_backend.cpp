@@ -17,6 +17,21 @@ constexpr auto kRetireFor = std::chrono::seconds(5);
 // codes and network errors are treated as transient.
 constexpr int32_t kGatewayAuthenticationFailed = 4004;
 
+// Callbacks run inside discordpp::RunCallbacks(): an exception escaping into the SDK would
+// terminate the process.
+template <class F>
+auto guarded(F f) {
+    return [f = std::move(f)](auto&&... args) {
+        try {
+            f(std::forward<decltype(args)>(args)...);
+        } catch (const std::exception& e) {
+            std::cerr << "relay: discord callback failed: " << e.what() << '\n';
+        } catch (...) {
+            std::cerr << "relay: discord callback failed\n";
+        }
+    };
+}
+
 discordpp::Activity to_activity(const ActivitySpec& s) {
     discordpp::Activity a;
     a.SetType(discordpp::ActivityTypes::Playing);
@@ -48,11 +63,11 @@ void SdkBackend::connect(const std::string& discord_id, const std::string& acces
     const discordpp::Client* raw = client.get();
     client->SetApplicationId(application_id_);
     client->AddLogCallback(
-        [discord_id](std::string message, discordpp::LoggingSeverity) {
+        guarded([discord_id](std::string message, discordpp::LoggingSeverity) {
             std::cerr << "discord sdk [" << discord_id << "]: " << message << '\n';
-        },
+        }),
         discordpp::LoggingSeverity::Error);
-    client->SetStatusChangedCallback([this, discord_id, raw](discordpp::Client::Status status,
+    client->SetStatusChangedCallback(guarded([this, discord_id, raw](discordpp::Client::Status status,
                                                              discordpp::Client::Error error, int32_t detail) {
         Entry* e = active(discord_id, raw);
         if (!e) return;
@@ -72,12 +87,12 @@ void SdkBackend::connect(const std::string& discord_id, const std::string& acces
                   << " ended: " << discordpp::Client::ErrorToString(error) << " (" << detail << ")\n";
         lost(discord_id,
              error == discordpp::Client::Error::UnexpectedClose && detail == kGatewayAuthenticationFailed);
-    });
+    }));
     Entry entry;
     entry.client = client;
     clients_.emplace(discord_id, std::move(entry));
     client->UpdateToken(discordpp::AuthorizationTokenType::Bearer, access_token,
-                        [this, discord_id, raw](discordpp::ClientResult r) {
+                        guarded([this, discord_id, raw](discordpp::ClientResult r) {
                             Entry* e = active(discord_id, raw);
                             if (!e) return;
                             if (r.Successful()) {
@@ -87,7 +102,7 @@ void SdkBackend::connect(const std::string& discord_id, const std::string& acces
                             std::cerr << "relay: token update for " << discord_id << " failed: " << r.Error()
                                       << '\n';
                             lost(discord_id, r.Status() == discordpp::HttpStatusCode::Unauthorized);
-                        });
+                        }));
 }
 
 void SdkBackend::set(const std::string& discord_id, const ActivitySpec& spec) {
@@ -117,11 +132,11 @@ void SdkBackend::update_token(const std::string& discord_id, const std::string& 
     auto it = clients_.find(discord_id);
     if (it == clients_.end()) return;
     it->second.client->UpdateToken(discordpp::AuthorizationTokenType::Bearer, access_token,
-                                   [discord_id](discordpp::ClientResult r) {
+                                   guarded([discord_id](discordpp::ClientResult r) {
                                        if (!r.Successful())
                                            std::cerr << "relay: token update for " << discord_id
                                                      << " failed: " << r.Error() << '\n';
-                                   });
+                                   }));
 }
 
 void SdkBackend::run_callbacks() {
@@ -149,9 +164,9 @@ void SdkBackend::lost(const std::string& id, bool auth_failed) {
 
 void SdkBackend::apply(const std::string& id, Entry& e) {
     if (e.latest) {
-        e.client->UpdateRichPresence(to_activity(*e.latest), [id](discordpp::ClientResult r) {
+        e.client->UpdateRichPresence(to_activity(*e.latest), guarded([id](discordpp::ClientResult r) {
             if (!r.Successful()) std::cerr << "relay: presence update for " << id << " failed: " << r.Error() << '\n';
-        });
+        }));
         e.applied = true;
     } else if (e.applied) {
         e.client->ClearRichPresence();

@@ -63,7 +63,12 @@ private:
     void clear_user(const std::string& id, UserState& st, int64_t now);
     void forget(const std::string& id);
     void connection_lost(const std::string& id, bool auth_failed);
-    std::optional<std::string> access_token(const std::string& id);
+    struct TokenLookup {
+        // Gone: forget the user. Later: keep the desired state and retry at the reconnect pace.
+        enum State { Ready, Gone, Later } state;
+        std::string token;
+    };
+    TokenLookup access_token(const std::string& id, int64_t now);
     std::string image_for(const std::optional<std::string>& tid);
     void publish(const std::string& id, const std::optional<ActivitySpec>& spec);
 
