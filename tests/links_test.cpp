@@ -234,3 +234,32 @@ TEST_CASE("links: unlink skips tokens that fail to decrypt and ignores unknown u
     CHECK(f.oauth.revoked == std::vector<std::string>{"refresh-9"});
     CHECK_FALSE(f.db->user_by_discord_id("9"));
 }
+
+TEST_CASE("links: a throwing on_relinked does not lose the new key") {
+    Fixture f;
+    auto id1 = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted());
+    f.links->poll(id1);
+    f.links->on_relinked = [](const std::string&) { throw std::runtime_error("boom"); };
+    auto id2 = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted("42", "alice", "access-2", "refresh-2"));
+    auto p = f.links->poll(id2);
+    CHECK(p.state == LinkPoll::Linked);
+    CHECK(f.db->user_by_key_hash(sha256_hex(p.api_key)));
+    CHECK(f.links->poll(id2).api_key == p.api_key);
+}
+
+TEST_CASE("links: an oauth exception leaves the entry able to expire and be purged") {
+    Fixture f;
+    auto id = f.started();
+    f.oauth.throw_on_poll = true;
+    CHECK_THROWS(f.links->poll(id));
+    f.oauth.throw_on_poll = false;
+    f.now += 5000;
+    f.oauth.poll_results.push_back(FakeOAuth::state(PollState::Pending));
+    CHECK(f.links->poll(id).state == LinkPoll::Pending);
+    CHECK(f.oauth.poll_calls == 2);
+    f.now += 400'000;
+    CHECK(f.links->poll(id).state == LinkPoll::Expired);
+    CHECK(f.links->poll(id).state == LinkPoll::Unknown);
+}

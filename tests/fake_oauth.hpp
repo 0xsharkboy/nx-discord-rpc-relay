@@ -3,6 +3,7 @@
 #include <deque>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,7 @@ public:
     std::deque<RefreshResult> refresh_results;
     RefreshResult refresh_default{RefreshResult::State::Transient, std::nullopt};
 
+    bool throw_on_poll = false;
     int authorize_calls = 0, poll_calls = 0, refresh_calls = 0;
     std::vector<std::string> polled_codes, refreshed_tokens, revoked;
 
@@ -38,6 +40,7 @@ public:
         std::lock_guard lk(mu_);
         ++poll_calls;
         polled_codes.push_back(device_code);
+        if (throw_on_poll) throw std::runtime_error("poll failed");
         return pop(poll_results, poll_default);
     }
     RefreshResult refresh(const std::string& refresh_token) override {

@@ -48,7 +48,7 @@ private:
     };
 
     void purge_locked(int64_t now);
-    LinkPoll finish_grant(const Tokens& t, int64_t now);
+    LinkPoll finish_grant(const std::string& link_id, const Tokens& t, int64_t now);
 
     IOAuth& oauth_;
     Db& db_;

@@ -83,45 +83,41 @@ LinkPoll Links::poll(const std::string& link_id) {
         device_code = e.device_code;
     }
 
+    struct InFlight {
+        Links& self;
+        const std::string& id;
+        ~InFlight() {
+            std::lock_guard lk(self.mu_);
+            if (auto it = self.entries_.find(id); it != self.entries_.end()) it->second.polling = false;
+        }
+    } in_flight{*this, link_id};
+
     PollResult r = oauth_.poll(device_code);
 
-    LinkPoll granted;
-    bool is_granted = r.state == PollState::Granted && r.tokens;
-    if (is_granted) granted = finish_grant(*r.tokens, now);
+    if (r.state == PollState::Granted && r.tokens) return finish_grant(link_id, *r.tokens, now);
 
     std::lock_guard lk(mu_);
-    auto it = entries_.find(link_id);
     LinkPoll out{LinkPoll::Pending, {}, {}};
-    if (it != entries_.end()) {
+    if (auto it = entries_.find(link_id); it != entries_.end()) {
         Entry& e = it->second;
-        e.polling = false;
-        if (is_granted) {
-            e.state = LinkPoll::Linked;
-            e.api_key = granted.api_key;
-            e.username = granted.username;
-            e.linked_at_ms = now;
-            out = granted;
-        } else {
-            switch (r.state) {
-                case PollState::Pending: break;
-                case PollState::SlowDown: e.interval_ms += kSlowDownMs; break;
-                case PollState::Expired:
-                    e.state = LinkPoll::Expired;
-                    out.state = LinkPoll::Expired;
-                    break;
-                case PollState::Denied:
-                    e.state = LinkPoll::Denied;
-                    out.state = LinkPoll::Denied;
-                    break;
-                default: out.state = LinkPoll::Error; break;
-            }
+        switch (r.state) {
+            case PollState::Pending: break;
+            case PollState::SlowDown: e.interval_ms += kSlowDownMs; break;
+            case PollState::Expired:
+                e.state = LinkPoll::Expired;
+                out.state = LinkPoll::Expired;
+                break;
+            case PollState::Denied:
+                e.state = LinkPoll::Denied;
+                out.state = LinkPoll::Denied;
+                break;
+            default: out.state = LinkPoll::Error; break;
         }
     }
-    purge_locked(now_ms_());
     return out;
 }
 
-LinkPoll Links::finish_grant(const Tokens& t, int64_t now) {
+LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_t now) {
     std::string api_key = random_token(32);
     bool existed = db_.user_by_discord_id(t.discord_id).has_value();
 
@@ -135,7 +131,24 @@ LinkPoll Links::finish_grant(const Tokens& t, int64_t now) {
     u.link_broken = false;
     db_.upsert_user(u);
 
-    if (existed && on_relinked) on_relinked(t.discord_id);
+    {
+        std::lock_guard lk(mu_);
+        if (auto it = entries_.find(link_id); it != entries_.end()) {
+            Entry& e = it->second;
+            e.state = LinkPoll::Linked;
+            e.api_key = api_key;
+            e.username = t.username;
+            e.linked_at_ms = now;
+        }
+    }
+
+    // The old key is already dead and the new one is stored: a throwing hook must not lose it.
+    if (existed && on_relinked) {
+        try {
+            on_relinked(t.discord_id);
+        } catch (...) {
+        }
+    }
     return {LinkPoll::Linked, std::move(api_key), t.username};
 }
 
