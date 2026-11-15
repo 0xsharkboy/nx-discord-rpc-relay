@@ -28,6 +28,9 @@ FetchContent_Declare(httplib
     GIT_SHALLOW ON)
 
 find_package(SQLite3 REQUIRED)
+if(NOT TARGET SQLite3::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
 find_package(OpenSSL REQUIRED)
 
 set(HTTPLIB_REQUIRE_OPENSSL ON)

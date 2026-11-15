@@ -1,0 +1,7 @@
+build/
+.superpowers/
+.direnv/
+.git/
+data/
+deploy/relay.env
+*.db

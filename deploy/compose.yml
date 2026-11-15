@@ -1,0 +1,13 @@
+services:
+  relay:
+    image: ghcr.io/0xsharkboy/nx-discord-rpc-relay:main
+    env_file: relay.env
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/data
+    # Shutdown clears presences and may wait for a refresh run.
+    stop_grace_period: 30s
+    # The image runs as uid 1000 (user "ubuntu"). If ./data is owned by another uid on the host,
+    # either chown it to 1000 or set `user: "<uid>:<gid>"` here.
