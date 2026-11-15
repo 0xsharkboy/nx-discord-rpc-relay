@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <string_view>
 #include <vector>
 
 #include "crypto.hpp"

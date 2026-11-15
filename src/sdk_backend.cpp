@@ -4,6 +4,7 @@
 
 #include "sdk_backend.hpp"
 
+#include <exception>
 #include <iostream>
 #include <utility>
 

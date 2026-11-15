@@ -4,8 +4,10 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 
 namespace relay {
 

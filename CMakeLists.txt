@@ -28,6 +28,7 @@ FetchContent_Declare(httplib
     GIT_SHALLOW ON)
 
 find_package(SQLite3 REQUIRED)
+# CMake before 4.3 (Ubuntu 24.04 ships 3.28) names the imported target SQLite::SQLite3 only.
 if(NOT TARGET SQLite3::SQLite3)
     add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
 endif()
@@ -49,7 +50,6 @@ set(SDK_DIR ${CMAKE_SOURCE_DIR}/third_party/discord_social_sdk)
 add_library(discord_sdk SHARED IMPORTED)
 set_target_properties(discord_sdk PROPERTIES
     IMPORTED_LOCATION ${SDK_DIR}/lib/release/libdiscord_partner_sdk.so
-    IMPORTED_NO_SONAME ON
     INTERFACE_INCLUDE_DIRECTORIES ${SDK_DIR}/include)
 
 add_library(relay_core STATIC
