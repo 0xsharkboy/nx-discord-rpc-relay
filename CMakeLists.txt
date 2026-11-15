@@ -48,6 +48,8 @@ set_target_properties(discord_sdk PROPERTIES
 
 add_library(relay_core STATIC
     src/version.cpp
+    src/config.cpp
+    src/crypto.cpp
 )
 target_include_directories(relay_core PUBLIC src)
 target_link_libraries(relay_core PUBLIC
