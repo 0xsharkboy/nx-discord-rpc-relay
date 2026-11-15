@@ -6,6 +6,10 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <arpa/inet.h>
+#include <cerrno>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
 
@@ -598,4 +602,61 @@ TEST_CASE("api: a chunked body is refused and the connection is closed") {
         "application/json");
     check_error(r, 411, "length_required");
     CHECK(r->get_header_value("Connection") == "close");
+}
+
+namespace {
+// Everything the server sends until it closes the connection or `timeout_s` passes without data.
+struct RawRead {
+    std::string data;
+    bool closed = false;
+};
+
+RawRead raw_read(int fd, int timeout_s) {
+    timeval tv{timeout_s, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    RawRead out;
+    char buf[4096];
+    for (;;) {
+        ssize_t n = ::recv(fd, buf, sizeof buf, 0);
+        if (n > 0) {
+            out.data.append(buf, static_cast<size_t>(n));
+            continue;
+        }
+        out.closed = n == 0 || errno == ECONNRESET;
+        return out;
+    }
+}
+
+int count_of(const std::string& hay, const std::string& needle) {
+    int n = 0;
+    for (auto pos = hay.find(needle); pos != std::string::npos; pos = hay.find(needle, pos + 1)) ++n;
+    return n;
+}
+}  // namespace
+
+TEST_CASE("api: chunk bytes after a 411 are never parsed as a second request") {
+    Fixture f;
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    REQUIRE(fd >= 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(f.port));
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) == 0);
+
+    const std::string head =
+        "PUT /v1/presence HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
+        "Content-Type: application/json\r\n\r\n";
+    REQUIRE(::send(fd, head.data(), head.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(head.size()));
+    auto first = raw_read(fd, 1);
+    CHECK(first.data.find("HTTP/1.1 411") == 0);
+
+    // The unread chunked body arrives after the response: it must not reach the router.
+    const std::string body = "GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n";
+    ::send(fd, body.data(), body.size(), MSG_NOSIGNAL);
+    auto rest = first.closed ? RawRead{{}, true} : raw_read(fd, 2);
+    ::close(fd);
+
+    CHECK(count_of(first.data + rest.data, "HTTP/1.1 ") == 1);
+    CHECK(rest.closed);
 }

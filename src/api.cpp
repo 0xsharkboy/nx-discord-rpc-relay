@@ -308,13 +308,16 @@ void register_routes(httplib::Server& svr, Deps& d) {
         };
 
     svr.set_payload_max_length(kMaxPayloadBytes);
+    // One request per connection. httplib 0.18.7 decides to close only before routing, so a handler
+    // cannot close after refusing a body it did not read (a chunked one): its bytes would be parsed
+    // as the next request. The relay sits behind a local reverse proxy, so losing keep-alive on
+    // that hop is cheap.
+    svr.set_keep_alive_max_count(1);
 
     svr.set_pre_routing_handler([&d](const Request& req, Response& res) {
         t_request_start = d.monotonic_ms();
         // This httplib version enforces the payload limit only on Content-Length bodies.
         if (req.has_header("Transfer-Encoding")) {
-            // The unread chunked body would otherwise be parsed as the next request.
-            res.set_header("Connection", "close");
             send_error(res, 411, "length_required", "Send the body with a Content-Length header");
             return HandlerResponse::Handled;
         }

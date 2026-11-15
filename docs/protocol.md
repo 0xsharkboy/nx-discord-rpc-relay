@@ -11,8 +11,10 @@ Rich Presence.
 - Request and response bodies are JSON (`Content-Type: application/json`), except icon uploads
   (raw JPEG bytes), icon downloads (`image/jpeg`) and `GET /healthz` (`text/plain`).
 - Every request with a body must send `Content-Length`. Chunked uploads
-  (`Transfer-Encoding`) are refused with `411 length_required` and `Connection: close`. A request without
-  `Content-Length` is treated as having an empty body.
+  (`Transfer-Encoding`) are refused with `411 length_required`. A request without `Content-Length`
+  is treated as having an empty body.
+- The relay serves one request per connection: every response carries `Connection: close` and the
+  relay closes the socket after it. Open a new connection for each request.
 - Any request body over 262144 bytes is discarded unprocessed and refused with `413 too_large`,
   before authentication or any other check.
 - Lengths are counted in bytes of UTF-8, not characters.
