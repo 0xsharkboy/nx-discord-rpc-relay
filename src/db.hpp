@@ -35,6 +35,7 @@ public:
     void upsert_user(const User&);
     std::optional<User> user_by_key_hash(std::string_view);
     std::optional<User> user_by_discord_id(std::string_view);
+    // Also removes the user's pending icon votes.
     void delete_user(std::string_view discord_id);
     void set_link_broken(std::string_view discord_id, bool);
     // The guarded updates below change the row only while it still holds `key_hash`, so work based

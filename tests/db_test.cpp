@@ -90,6 +90,19 @@ TEST_CASE("db: delete_user") {
     db->delete_user("1");
 }
 
+TEST_CASE("db: delete_user also removes that user's icon votes") {
+    TempDb t;
+    auto db = t.open();
+    db->upsert_user(make_user("1", "h1"));
+    db->upsert_user(make_user("2", "h2"));
+    CHECK(db->add_vote("T", "S", "1", 10) == 1);
+    CHECK(db->add_vote("T", "S", "2", 10) == 2);
+    CHECK(db->add_vote("U", "S", "1", 10) == 1);
+    db->delete_user("1");
+    CHECK(db->add_vote("T", "S", "2", 11) == 1);
+    CHECK(db->add_vote("U", "S", "3", 11) == 1);
+}
+
 TEST_CASE("db: link_broken round trip") {
     TempDb t;
     auto db = t.open();
