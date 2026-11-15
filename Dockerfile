@@ -19,9 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 # The ubuntu image already ships user "ubuntu" with uid 1000, the usual owner of ./data on the host.
 COPY --from=build /src/build/relay /src/build/libdiscord_partner_sdk.so /opt/relay/
-RUN mkdir /data && chown ubuntu:ubuntu /data
+# HOME is where the Discord SDK keeps its own files, apart from the database.
+RUN mkdir -p /data/home && chown -R ubuntu:ubuntu /data
 USER ubuntu
-ENV DATA_DIR=/data HOME=/data
+ENV DATA_DIR=/data HOME=/data/home
 VOLUME /data
 EXPOSE 8080
 STOPSIGNAL SIGTERM

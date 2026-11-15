@@ -9,6 +9,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -113,6 +114,8 @@ void background_jobs(Refresher& refresher, Links& links, Db& db, StopFlag& stop)
 }  // namespace
 
 int main() {
+    // The database holds sealed tokens and the SDK writes its state under HOME: owner only.
+    ::umask(077);
     std::signal(SIGPIPE, SIG_IGN);
 
     auto loaded = load_config([](const char* name) -> std::optional<std::string> {
@@ -147,6 +150,13 @@ int main() {
     std::unique_ptr<Db> db;
     try {
         std::filesystem::create_directories(icons_dir);
+        // The image sets HOME under DATA_DIR for the SDK; a fresh bind mount hides the directory the
+        // image created there.
+        if (const char* home = std::getenv("HOME"); home && *home) {
+            const auto rel = std::filesystem::path(home).lexically_normal().lexically_relative(
+                data_dir.lexically_normal());
+            if (!rel.empty() && *rel.begin() != "..") std::filesystem::create_directories(home);
+        }
         db = Db::open((data_dir / "relay.db").string());
     } catch (const std::exception& e) {
         std::cerr << "relay: cannot prepare the data directory: " << e.what() << '\n';
