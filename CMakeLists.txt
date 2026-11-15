@@ -54,6 +54,7 @@ add_library(relay_core STATIC
     src/icons.cpp
     src/links.cpp
     src/oauth.cpp
+    src/presence.cpp
     src/stb_impl.cpp
 )
 target_include_directories(relay_core PUBLIC src)
@@ -62,6 +63,7 @@ target_link_libraries(relay_core PUBLIC
 
 add_executable(relay
     src/main.cpp
+    src/sdk_backend.cpp
 )
 target_link_libraries(relay PRIVATE relay_core discord_sdk)
 set_target_properties(relay PROPERTIES
