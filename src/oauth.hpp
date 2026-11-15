@@ -29,7 +29,9 @@ struct PollResult {
 };
 
 struct RefreshResult {
-    enum class State { Refreshed, Revoked, Transient } state = State::Transient;
+    // ClientError: Discord refused the relay's own credentials (wrong or rotated client secret).
+    // It says nothing about the user's grant, so it is handled like Transient.
+    enum class State { Refreshed, Revoked, Transient, ClientError } state = State::Transient;
     std::optional<Tokens> tokens;
 };
 
@@ -61,8 +63,9 @@ std::optional<std::pair<std::string, std::string>> id_token_identity(std::string
 // http_status 0 means the request never completed. 429 maps to SlowDown.
 PollResult parse_token_response(int http_status, std::string_view body);
 
-// Revoked only for a definitive rejection (400 invalid_grant, any 401); everything
-// else that is not a valid 200 is Transient so an outage never breaks links.
+// ClientError for invalid_client or unauthorized_client at any status. Revoked only for a
+// definitive rejection of the grant (invalid_grant, or any other 401); everything else that is not
+// a valid 200 is Transient so an outage never breaks links.
 RefreshResult parse_refresh_response(int http_status, std::string_view body);
 
 // Returns nullopt if the body lacks a usable device_code/user_code/verification_uri.

@@ -82,6 +82,14 @@ TEST_CASE("parse_refresh_response") {
 
     CHECK(parse_refresh_response(400, R"({"error":"invalid_grant"})").state == RefreshResult::State::Revoked);
     CHECK(parse_refresh_response(401, "").state == RefreshResult::State::Revoked);
+    CHECK(parse_refresh_response(401, R"({"error":"invalid_grant"})").state == RefreshResult::State::Revoked);
+    CHECK(parse_refresh_response(401, R"({"error":"invalid_token"})").state == RefreshResult::State::Revoked);
+    CHECK(parse_refresh_response(401, R"({"error":"invalid_client"})").state == RefreshResult::State::ClientError);
+    CHECK(parse_refresh_response(400, R"({"error":"invalid_client"})").state == RefreshResult::State::ClientError);
+    CHECK(parse_refresh_response(400, R"({"error":"unauthorized_client"})").state ==
+          RefreshResult::State::ClientError);
+    CHECK(parse_refresh_response(401, R"({"error":"unauthorized_client"})").state ==
+          RefreshResult::State::ClientError);
     CHECK(parse_refresh_response(400, R"({"error":"invalid_request"})").state == RefreshResult::State::Transient);
     CHECK(parse_refresh_response(500, "").state == RefreshResult::State::Transient);
     CHECK(parse_refresh_response(429, "").state == RefreshResult::State::Transient);

@@ -90,10 +90,13 @@ PollResult parse_token_response(int http_status, std::string_view body) {
 
 RefreshResult parse_refresh_response(int http_status, std::string_view body) {
     using S = RefreshResult::State;
-    if (http_status == 401) return {S::Revoked, std::nullopt};
     auto j = parse_object(body);
+    const std::string err = j ? str_field(*j, "error") : std::string();
+    // Discord answers a bad client secret with 401 too: that must not break every user's link.
+    if (err == "invalid_client" || err == "unauthorized_client") return {S::ClientError, std::nullopt};
+    if (http_status == 401) return {S::Revoked, std::nullopt};
     if (!j) return {S::Transient, std::nullopt};
-    if (http_status == 400 && str_field(*j, "error") == "invalid_grant") return {S::Revoked, std::nullopt};
+    if (http_status == 400 && err == "invalid_grant") return {S::Revoked, std::nullopt};
     if (http_status != 200) return {S::Transient, std::nullopt};
     auto t = tokens_from(*j);
     if (!t) return {S::Transient, std::nullopt};

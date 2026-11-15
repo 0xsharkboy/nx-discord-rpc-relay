@@ -169,3 +169,26 @@ TEST_CASE("refresher: an exception for one user does not stop the next") {
     CHECK(open(f.key, f.db->user_by_discord_id("43")->access_sealed) == std::optional<std::string>("fresh"));
     CHECK_FALSE(f.db->user_by_discord_id("42")->link_broken);
 }
+
+TEST_CASE("refresher: rejected client credentials break no link and end the run") {
+    Fixture f;
+    f.add_user("42", kNow + 3600);
+    f.add_user("43", kNow + 3600);
+    f.connect("42");
+    f.oauth.refresh_default = state(RefreshResult::State::ClientError);
+
+    CHECK_NOTHROW(f.refresher->run_once());
+
+    CHECK(f.oauth.refresh_calls == 1);
+    for (const char* id : {"42", "43"}) {
+        auto u = f.db->user_by_discord_id(id);
+        CHECK_FALSE(u->link_broken);
+        CHECK(open(f.key, u->refresh_sealed) == std::optional<std::string>(std::string("refresh-") + id));
+    }
+    f.presence->tick();
+    CHECK(f.backend.calls(Kind::Disconnect).empty());
+
+    f.oauth.refresh_default = refreshed("a2", "r2");
+    f.refresher->run_once();
+    CHECK(f.oauth.refresh_calls == 3);
+}
