@@ -29,6 +29,8 @@ public:
     // `now` returns unix seconds.
     Icons(Db& db, std::string icons_dir, int threshold, std::function<int64_t()> now);
 
+    // Throws std::runtime_error if the icon file cannot be written (server I/O error); the vote
+    // recorded before the write stays.
     IconOutcome submit(std::string_view title_id, std::string_view jpeg,
                        std::string_view voter_discord_id, bool admin);
     std::optional<std::string> published_path(std::string_view title_id);

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 #include <stb_image.h>
@@ -122,7 +123,8 @@ IconOutcome Icons::submit(std::string_view title_id, std::string_view jpeg,
             votes = db_.add_vote(tid, hash, voter_discord_id, now_());
             if (votes < threshold_) return {IconResult::Pending, votes, threshold_};
         }
-        if (!write_atomic(path_for(tid), *encoded)) return {IconResult::Invalid};
+        if (!write_atomic(path_for(tid), *encoded))
+            throw std::runtime_error("failed to write icon file");
         db_.publish_icon(tid, hash, now_());
     }
     if (on_published) on_published(tid);

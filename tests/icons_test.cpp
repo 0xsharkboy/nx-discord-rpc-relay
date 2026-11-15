@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -176,17 +177,16 @@ TEST_CASE("icons: admin publishes immediately and replaces") {
 TEST_CASE("icons: non-admin upload on a published title") {
     Env e;
     CHECK(e.icons->submit(TID, make_jpeg(256, 256, 1), "", true).result == IconResult::Published);
+    auto two = make_jpeg(256, 256, 2);
     auto path = *e.icons->published_path(TID);
     auto before = read_file(path);
 
-    auto o = e.icons->submit(TID, make_jpeg(256, 256, 2), "A", false);
+    auto o = e.icons->submit(TID, two, "A", false);
     CHECK(o.result == IconResult::AlreadyPublished);
     CHECK(read_file(path) == before);
     CHECK(e.fired == 1);
-    // No vote was recorded: the next distinct voter for the same bytes must not reach 2.
-    e.icons->admin_delete(TID);
-    auto fresh = make_jpeg(256, 256, 3);
-    CHECK(e.icons->submit(TID, fresh, "A", false).votes == 1);
+    // A recorded vote for `two` would make this probe return 2.
+    CHECK(e.db->add_vote(TID, sha256_hex(two), "Z", e.clock) == 1);
 }
 
 TEST_CASE("icons: rejected uploads record no vote") {
@@ -258,4 +258,15 @@ TEST_CASE("icons: works without on_published") {
     Env e;
     e.icons->on_published = nullptr;
     CHECK(e.icons->submit(TID, make_jpeg(256, 256, 1), "", true).result == IconResult::Published);
+}
+
+TEST_CASE("icons: write failure throws and publishes nothing") {
+    if (::geteuid() == 0) return;
+    Env e;
+    auto jpg = make_jpeg(256, 256, 1);
+    fs::permissions(e.root / "icons", fs::perms::owner_read | fs::perms::owner_exec);
+    CHECK_THROWS_AS(e.icons->submit(TID, jpg, "", true), std::runtime_error);
+    fs::permissions(e.root / "icons", fs::perms::owner_all);
+    CHECK_FALSE(e.icons->published_path(TID));
+    CHECK(e.fired == 0);
 }
