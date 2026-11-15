@@ -290,6 +290,19 @@ TEST_CASE("presence: an auth failure marks the link broken and forgets the user"
     CHECK_FALSE(f.presence->current("42"));
 }
 
+TEST_CASE("presence: an auth loss of the old client after a relink does not break the new link") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.presence->tick();
+    User u = *f.db->user_by_discord_id("42");
+    u.key_hash = "hash42-new";
+    u.access_sealed = seal(f.key, "access-42-relinked");
+    f.db->upsert_user(u);
+    f.backend.lose("42", true);
+    CHECK_FALSE(f.db->user_by_discord_id("42")->link_broken);
+    CHECK_FALSE(f.presence->current("42"));
+}
+
 TEST_CASE("presence: a non-auth loss reconnects at most once per 30 s") {
     Fixture f;
     f.put("42", "Zelda");
@@ -347,7 +360,7 @@ TEST_CASE("presence: token_refreshed updates a connected client only") {
     f.put("42", "Zelda");
     f.presence->tick();
     f.backend.reset();
-    f.db->update_tokens("42", seal(f.key, "access-42-new"), seal(f.key, "refresh-42-new"), 1'900'000'000);
+    f.db->update_tokens("42", "hash42", seal(f.key, "access-42-new"), seal(f.key, "refresh-42-new"), 1'900'000'000);
     f.presence->token_refreshed("42");
     f.presence->token_refreshed("43");
     f.presence->tick();
@@ -376,13 +389,13 @@ TEST_CASE("presence: token_refreshed while waiting to reconnect does nothing") {
 
 TEST_CASE("presence: an expired access token waits for the refresher instead of connecting") {
     Fixture f;
-    f.db->update_tokens("42", seal(f.key, "access-42"), seal(f.key, "refresh-42"), f.now / 1000);
+    f.db->update_tokens("42", "hash42", seal(f.key, "access-42"), seal(f.key, "refresh-42"), f.now / 1000);
     f.put("42", "Zelda");
     f.presence->tick();
     f.advance(29999);
     CHECK(f.backend.calls().empty());
     CHECK_FALSE(f.db->user_by_discord_id("42")->link_broken);
-    f.db->update_tokens("42", seal(f.key, "access-42-new"), seal(f.key, "refresh-42-new"), 1'900'000'000);
+    f.db->update_tokens("42", "hash42", seal(f.key, "access-42-new"), seal(f.key, "refresh-42-new"), 1'900'000'000);
     f.put("42", "Zelda");
     f.advance(1);
     auto calls = f.backend.calls();

@@ -60,6 +60,8 @@ private:
         std::optional<int64_t> last_sent_ms, last_connect_ms, cleared_at_ms;
         int64_t last_seen_ms = 0;
         std::optional<std::string> title_id;
+        // The link the client was connected with; an auth loss may only break that one.
+        std::string key_hash;
     };
 
     void enqueue(Command c);
@@ -72,7 +74,7 @@ private:
     struct TokenLookup {
         // Gone: forget the user. Later: keep the desired state and retry at the reconnect pace.
         enum State { Ready, Gone, Later } state;
-        std::string token;
+        std::string token, key_hash;
     };
     TokenLookup access_token(const std::string& id, int64_t now);
     std::string image_for(const std::optional<std::string>& tid);

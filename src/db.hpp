@@ -37,8 +37,12 @@ public:
     std::optional<User> user_by_discord_id(std::string_view);
     void delete_user(std::string_view discord_id);
     void set_link_broken(std::string_view discord_id, bool);
-    void update_tokens(std::string_view discord_id, std::span<const uint8_t> access,
+    // The guarded updates below change the row only while it still holds `key_hash`, so work based
+    // on a snapshot taken before a relink or an unlink cannot touch the new link. They return whether
+    // a row changed.
+    bool update_tokens(std::string_view discord_id, std::string_view key_hash, std::span<const uint8_t> access,
                        std::span<const uint8_t> refresh, int64_t expires_at);
+    bool break_link(std::string_view discord_id, std::string_view key_hash);
     // Excludes users whose link is broken.
     std::vector<User> users_expiring_before(int64_t unix_s);
 

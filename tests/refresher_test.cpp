@@ -192,3 +192,46 @@ TEST_CASE("refresher: rejected client credentials break no link and end the run"
     f.refresher->run_once();
     CHECK(f.oauth.refresh_calls == 3);
 }
+
+namespace {
+// The account is linked again (new key, new grant) while its old grant is being refreshed.
+void relink_during_refresh(Fixture& f) {
+    f.oauth.during_refresh = [&f] {
+        User u = *f.db->user_by_discord_id("42");
+        u.key_hash = "hash42-new";
+        u.access_sealed = seal(f.key, "access-relinked");
+        u.refresh_sealed = seal(f.key, "refresh-relinked");
+        u.access_expires_at = kNow + 604800;
+        f.db->upsert_user(u);
+    };
+}
+}  // namespace
+
+TEST_CASE("refresher: a refresh racing a relink does not overwrite the new grant") {
+    Fixture f;
+    f.add_user("42", kNow + 3600);
+    relink_during_refresh(f);
+    f.oauth.refresh_results.push_back(refreshed("access-old-grant", "refresh-old-grant"));
+
+    f.refresher->run_once();
+
+    auto u = f.db->user_by_discord_id("42");
+    CHECK(u->key_hash == "hash42-new");
+    CHECK(open(f.key, u->access_sealed) == std::optional<std::string>("access-relinked"));
+    CHECK(open(f.key, u->refresh_sealed) == std::optional<std::string>("refresh-relinked"));
+    CHECK(u->access_expires_at == kNow + 604800);
+}
+
+TEST_CASE("refresher: a revoked old grant racing a relink does not break the new link") {
+    Fixture f;
+    f.add_user("42", kNow + 3600);
+    f.connect("42");
+    relink_during_refresh(f);
+    f.oauth.refresh_results.push_back(state(RefreshResult::State::Revoked));
+
+    f.refresher->run_once();
+
+    CHECK_FALSE(f.db->user_by_discord_id("42")->link_broken);
+    f.presence->tick();
+    CHECK(f.backend.calls(Kind::Disconnect).empty());
+}

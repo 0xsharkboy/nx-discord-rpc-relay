@@ -214,17 +214,28 @@ void Db::set_link_broken(std::string_view discord_id, bool broken) {
         .run();
 }
 
-void Db::update_tokens(std::string_view discord_id, std::span<const uint8_t> access,
+bool Db::update_tokens(std::string_view discord_id, std::string_view key_hash, std::span<const uint8_t> access,
                        std::span<const uint8_t> refresh, int64_t expires_at) {
     std::lock_guard lock(mu_);
     Stmt(db_,
          "UPDATE users SET access_sealed = ?2, refresh_sealed = ?3, access_expires_at = ?4 "
-         "WHERE discord_id = ?1")
+         "WHERE discord_id = ?1 AND key_hash = ?5")
         .text(1, discord_id)
         .blob(2, access)
         .blob(3, refresh)
         .i64(4, expires_at)
+        .text(5, key_hash)
         .run();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool Db::break_link(std::string_view discord_id, std::string_view key_hash) {
+    std::lock_guard lock(mu_);
+    Stmt(db_, "UPDATE users SET link_broken = 1 WHERE discord_id = ?1 AND key_hash = ?2")
+        .text(1, discord_id)
+        .text(2, key_hash)
+        .run();
+    return sqlite3_changes(db_) > 0;
 }
 
 std::vector<User> Db::users_expiring_before(int64_t unix_s) {

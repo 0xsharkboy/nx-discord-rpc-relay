@@ -180,6 +180,7 @@ bool Presence::step(const std::string& id, UserState& st, int64_t now) {
         }
         backend_.connect(id, t.token);
         st.connected = true;
+        st.key_hash = std::move(t.key_hash);
         st.last_connect_ms = now;
     }
     if (same_activity(*st.desired, st.sent)) return true;
@@ -215,7 +216,7 @@ void Presence::connection_lost(const std::string& id, bool auth_failed) {
     backend_.disconnect(id);
     if (auth_failed) {
         try {
-            db_.set_link_broken(id, true);
+            db_.break_link(id, it->second.key_hash);
         } catch (const std::exception& e) {
             std::cerr << "relay: presence could not mark " << id << " as link broken: " << e.what() << '\n';
         }
@@ -235,13 +236,13 @@ Presence::TokenLookup Presence::access_token(const std::string& id, int64_t now)
         user = db_.user_by_discord_id(id);
     } catch (const std::exception& e) {
         std::cerr << "relay: presence could not load user " << id << ": " << e.what() << '\n';
-        return {TokenLookup::Later, {}};
+        return {TokenLookup::Later, {}, {}};
     }
-    if (!user || user->link_broken) return {TokenLookup::Gone, {}};
-    if (user->access_expires_at <= now / 1000) return {TokenLookup::Later, {}};
+    if (!user || user->link_broken) return {TokenLookup::Gone, {}, {}};
+    if (user->access_expires_at <= now / 1000) return {TokenLookup::Later, {}, {}};
     auto token = open(key_, user->access_sealed);
-    if (!token) return {TokenLookup::Gone, {}};
-    return {TokenLookup::Ready, std::move(*token)};
+    if (!token) return {TokenLookup::Gone, {}, {}};
+    return {TokenLookup::Ready, std::move(*token), std::move(user->key_hash)};
 }
 
 std::string Presence::image_for(const std::optional<std::string>& tid) {

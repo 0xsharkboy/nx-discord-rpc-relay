@@ -38,7 +38,7 @@ void Refresher::run_once() {
 bool Refresher::refresh_user(const User& u, int64_t now) {
     const auto refresh_token = open(key_, u.refresh_sealed);
     if (!refresh_token) {
-        break_link(u.discord_id);
+        break_link(u);
         return true;
     }
     const RefreshResult r = oauth_.refresh(*refresh_token);
@@ -47,12 +47,12 @@ bool Refresher::refresh_user(const User& u, int64_t now) {
         if (!r.tokens) return true;
         const auto access = seal(key_, r.tokens->access_token);
         const auto refresh = seal(key_, r.tokens->refresh_token);
-        db_.update_tokens(u.discord_id, access, refresh, now + r.tokens->expires_in);
-        presence_.token_refreshed(u.discord_id);
+        if (db_.update_tokens(u.discord_id, u.key_hash, access, refresh, now + r.tokens->expires_in))
+            presence_.token_refreshed(u.discord_id);
         break;
     }
     case RefreshResult::State::Revoked:
-        break_link(u.discord_id);
+        break_link(u);
         break;
     case RefreshResult::State::Transient:
         break;
@@ -62,9 +62,9 @@ bool Refresher::refresh_user(const User& u, int64_t now) {
     return true;
 }
 
-void Refresher::break_link(const std::string& discord_id) {
-    db_.set_link_broken(discord_id, true);
-    presence_.drop(discord_id);
+// A relink during the Discord call replaced the key: the new link is not ours to break.
+void Refresher::break_link(const User& u) {
+    if (db_.break_link(u.discord_id, u.key_hash)) presence_.drop(u.discord_id);
 }
 
 }  // namespace relay

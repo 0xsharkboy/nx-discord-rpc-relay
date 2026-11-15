@@ -105,13 +105,30 @@ TEST_CASE("db: update_tokens") {
     auto db = t.open();
     db->upsert_user(make_user("1", "h1"));
     const std::vector<uint8_t> a{10, 11}, r{12};
-    db->update_tokens("1", a, r, 4242);
+    CHECK(db->update_tokens("1", "h1", a, r, 4242));
     auto u = db->user_by_discord_id("1");
     REQUIRE(u);
     CHECK(u->access_sealed == a);
     CHECK(u->refresh_sealed == r);
     CHECK(u->access_expires_at == 4242);
     CHECK(u->key_hash == "h1");
+}
+
+TEST_CASE("db: token and link_broken updates are refused once the key hash changed") {
+    TempDb t;
+    auto db = t.open();
+    db->upsert_user(make_user("1", "h1"));
+    db->upsert_user(make_user("1", "h2"));
+    const std::vector<uint8_t> a{10, 11}, r{12};
+    CHECK_FALSE(db->update_tokens("1", "h1", a, r, 4242));
+    CHECK_FALSE(db->break_link("1", "h1"));
+    auto u = db->user_by_discord_id("1");
+    CHECK(u->access_sealed == std::vector<uint8_t>{1, 2, 3});
+    CHECK(u->access_expires_at == 1000);
+    CHECK_FALSE(u->link_broken);
+    CHECK(db->break_link("1", "h2"));
+    CHECK(db->user_by_discord_id("1")->link_broken);
+    CHECK_FALSE(db->update_tokens("2", "h2", a, r, 1));
 }
 
 TEST_CASE("db: users_expiring_before is strict and skips broken links") {
@@ -225,7 +242,7 @@ TEST_CASE("db: empty blobs and strings bind as empty values, not NULL") {
     CHECK(got->access_sealed.empty());
     CHECK(got->refresh_sealed.empty());
     db->upsert_user(make_user("2", "h2"));
-    REQUIRE_NOTHROW(db->update_tokens("2", std::span<const uint8_t>{}, std::span<const uint8_t>{}, 7));
+    REQUIRE_NOTHROW(db->update_tokens("2", "h2", std::span<const uint8_t>{}, std::span<const uint8_t>{}, 7));
     auto two = db->user_by_discord_id("2");
     REQUIRE(two);
     CHECK(two->access_sealed.empty());
