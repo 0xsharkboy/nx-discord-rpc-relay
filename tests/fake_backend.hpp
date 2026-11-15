@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -25,7 +26,10 @@ public:
     void set(const std::string& id, const ActivitySpec& spec) override { record({Kind::Set, id, {}, spec}); }
     void clear(const std::string& id) override { record({Kind::Clear, id, {}, std::nullopt}); }
     void disconnect(const std::string& id) override { record({Kind::Disconnect, id, {}, std::nullopt}); }
+    bool throw_on_update_token = false;
+
     void update_token(const std::string& id, const std::string& token) override {
+        if (throw_on_update_token) throw std::runtime_error("backend failure");
         record({Kind::UpdateToken, id, token, std::nullopt});
     }
     void run_callbacks() override {

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <set>
+#include <stdexcept>
 #include <sqlite3.h>
 #include <unistd.h>
 
@@ -24,6 +25,8 @@ struct Fixture {
     std::array<uint8_t, 32> key{};
     int64_t now = 1'700'000'000'000;
     std::set<std::string> published;
+    // Stands in for a Db error inside Icons::published_path.
+    bool icon_lookup_fails = false;
     std::unique_ptr<Presence> presence;
 
     Fixture() {
@@ -36,7 +39,10 @@ struct Fixture {
         add_user("43", "access-43");
         presence = std::make_unique<Presence>(
             backend, *db, key, "https://x.test",
-            [this](const std::string& tid) { return published.count(tid) > 0; }, [this] { return now; });
+            [this](const std::string& tid) {
+                if (icon_lookup_fails) throw std::runtime_error("sqlite: no such table: published_icons");
+                return published.count(tid) > 0;
+            }, [this] { return now; });
     }
     ~Fixture() {
         presence.reset();
@@ -473,4 +479,29 @@ TEST_CASE("presence: disconnect_all disconnects every connected client and forge
     f.backend.reset();
     f.advance(120000);
     CHECK(f.backend.calls().empty());
+}
+
+TEST_CASE("presence: an icon lookup error falls back to the logo and keeps the other commands") {
+    Fixture f;
+    f.published.insert(kTid);
+    f.icon_lookup_fails = true;
+    f.put("42", "Zelda");
+    f.put("43", "Mario");
+    CHECK_NOTHROW(f.presence->tick());
+    auto sets = f.backend.calls(Kind::Set);
+    REQUIRE(sets.size() == 2);
+    for (const auto& s : sets) CHECK(s.spec->large_image == "switch_logo");
+}
+
+TEST_CASE("presence: a failing command does not lose the commands queued after it") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.presence->tick();
+    f.backend.reset();
+    f.backend.throw_on_update_token = true;
+    f.presence->token_refreshed("42");
+    f.put("43", "Mario");
+    CHECK_NOTHROW(f.presence->tick());
+    CHECK(f.backend.calls(Kind::Connect, "43").size() == 1);
+    CHECK(f.presence->current("43")->name == "Mario");
 }

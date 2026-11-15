@@ -1,6 +1,7 @@
 #include "presence.hpp"
 
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <utility>
 
@@ -80,7 +81,14 @@ void Presence::tick() {
         std::lock_guard lk(queue_mu_);
         commands.swap(queue_);
     }
-    for (const auto& c : commands) apply(c, now);
+    // The queue is already swapped out: one failing command must not lose the ones behind it.
+    for (const auto& c : commands) {
+        try {
+            apply(c, now);
+        } catch (const std::exception& e) {
+            std::cerr << "relay: presence command for " << c.key << " failed: " << e.what() << '\n';
+        }
+    }
     for (auto it = states_.begin(); it != states_.end();) {
         if (step(it->first, it->second, now)) {
             ++it;
@@ -246,7 +254,12 @@ Presence::TokenLookup Presence::access_token(const std::string& id, int64_t now)
 }
 
 std::string Presence::image_for(const std::optional<std::string>& tid) {
-    if (tid && icon_is_published_(*tid)) return base_url_ + "/icons/" + *tid + ".jpg";
+    if (!tid) return "switch_logo";
+    try {
+        if (icon_is_published_(*tid)) return base_url_ + "/icons/" + *tid + ".jpg";
+    } catch (const std::exception& e) {
+        std::cerr << "relay: presence could not look up the icon of " << *tid << ": " << e.what() << '\n';
+    }
     return "switch_logo";
 }
 
