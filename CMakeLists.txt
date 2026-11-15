@@ -56,6 +56,8 @@ add_library(relay_core STATIC
     src/oauth.cpp
     src/presence.cpp
     src/refresher.cpp
+    src/rate_limit.cpp
+    src/api.cpp
     src/stb_impl.cpp
 )
 target_include_directories(relay_core PUBLIC src)

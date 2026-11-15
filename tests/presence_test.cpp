@@ -429,3 +429,35 @@ TEST_CASE("presence: a db error on an auth loss still forgets the user") {
     CHECK(f.backend.calls(Kind::Disconnect, "42").size() == 1);
     hide_users_table(f.path, false);
 }
+
+TEST_CASE("presence: clear_all clears every shown activity and drops queued puts") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.put("43", "Mario");
+    f.presence->tick();
+    f.backend.reset();
+    f.put("42", "Queued");
+    f.presence->clear_all();
+    CHECK(f.backend.calls(Kind::Clear).size() == 2);
+    CHECK(f.backend.calls(Kind::Disconnect).empty());
+    CHECK_FALSE(f.presence->current("42"));
+    CHECK_FALSE(f.presence->current("43"));
+    f.backend.reset();
+    f.advance(10000);
+    CHECK(f.backend.calls(Kind::Set).empty());
+}
+
+TEST_CASE("presence: disconnect_all disconnects every connected client and forgets them") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.put("43", "Mario");
+    f.presence->tick();
+    f.presence->clear_all();
+    f.backend.reset();
+    f.presence->disconnect_all();
+    CHECK(f.backend.calls(Kind::Disconnect).size() == 2);
+    CHECK(f.backend.calls(Kind::Clear).empty());
+    f.backend.reset();
+    f.advance(120000);
+    CHECK(f.backend.calls().empty());
+}

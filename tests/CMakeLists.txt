@@ -8,6 +8,8 @@ add_executable(relay_tests
     oauth_test.cpp
     presence_test.cpp
     refresher_test.cpp
+    rate_limit_test.cpp
+    api_test.cpp
 )
 target_link_libraries(relay_tests PRIVATE relay_core doctest::doctest)
 add_test(NAME relay_tests COMMAND relay_tests)

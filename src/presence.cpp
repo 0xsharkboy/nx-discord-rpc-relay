@@ -93,6 +93,24 @@ void Presence::tick() {
     backend_.run_callbacks();
 }
 
+void Presence::clear_all() {
+    {
+        std::lock_guard lk(queue_mu_);
+        queue_.clear();
+    }
+    const int64_t now = now_ms_();
+    for (auto& [id, st] : states_)
+        if (!st.cleared_at_ms) clear_user(id, st, now);
+}
+
+void Presence::disconnect_all() {
+    for (auto& [id, st] : states_)
+        if (st.connected) backend_.disconnect(id);
+    states_.clear();
+    std::lock_guard lk(snapshot_mu_);
+    snapshot_.clear();
+}
+
 void Presence::apply(const Command& c, int64_t now) {
     switch (c.kind) {
     case Command::Put: {

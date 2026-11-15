@@ -1,0 +1,297 @@
+# Relay HTTP protocol (v1)
+
+This is the contract between the Switch sysmodule and the relay. The relay links a Discord account
+to a console through the OAuth device flow, then turns the console's presence reports into Discord
+Rich Presence.
+
+## Conventions
+
+- Base URL: the relay's public URL, for example `https://rpc.0xsharkboy.dev`. Every path below is
+  relative to it.
+- Request and response bodies are JSON (`Content-Type: application/json`), except icon uploads
+  (raw JPEG bytes), icon downloads (`image/jpeg`) and `GET /healthz` (`text/plain`).
+- Every request with a body must send `Content-Length`. Chunked uploads
+  (`Transfer-Encoding`) are refused with `411 length_required`. A request without
+  `Content-Length` is treated as having an empty body.
+- Any request body over 262144 bytes is discarded unprocessed and refused with `413 too_large`,
+  before authentication or any other check.
+- Lengths are counted in bytes of UTF-8, not characters.
+- Unknown JSON fields in request bodies are ignored. Clients must ignore unknown fields in
+  responses.
+
+### Authentication
+
+Keyed routes take the API key returned by the link flow:
+
+```
+Authorization: Bearer <api_key>
+```
+
+The API key is 43 characters of base64url. Store it; the relay keeps only its hash and cannot show
+it again. A missing, malformed or unknown key gives `401 unauthorized`.
+
+### Errors
+
+Every error response, including `404` for an unknown route, has this body:
+
+```json
+{"error": "<code>", "message": "<human readable text>"}
+```
+
+Clients must branch on `error`, never on `message`.
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 400 | `invalid_body` | `PUT /v1/presence` body failed validation |
+| 400 | `invalid_icon` | Not a 256×256 JPEG, or the title id is invalid |
+| 400 | `blocked` | This exact image was removed by an admin |
+| 400 | `bad_request` | Malformed HTTP request |
+| 401 | `unauthorized` | Missing, malformed or unknown key (or admin key required) |
+| 404 | `unknown_link` | The `link_id` was never issued or is gone |
+| 404 | `not_found` | Unknown route, or no published icon |
+| 409 | `link_broken` | The Discord authorization was revoked or can no longer be refreshed |
+| 411 | `length_required` | Chunked request body |
+| 413 | `too_large` | Body over the route's limit |
+| 429 | `rate_limited` | Too many requests; see `Retry-After` |
+| 500 | `internal_error` | Relay fault |
+| 502 | `discord_unavailable` | Discord did not answer; retry later |
+
+### Client behavior
+
+- **401** on a keyed route: the key is dead (the account was unlinked, or relinked from another
+  console). Stop sending presence and offer to link again.
+- **409 `link_broken`**: stop sending presence and offer to link again. `GET /v1/me` reports
+  `link_broken: true` in this state.
+- **429** and **5xx**: back off. When `Retry-After` (seconds) is present, wait at least that long;
+  otherwise use exponential backoff starting at 5 s, capped at 5 min.
+- Network errors: same as 5xx.
+
+## Rate limits
+
+| Route | Limit | Key |
+|---|---|---|
+| `POST /v1/link` | 10 per hour | client IP |
+| `POST /v1/link/{link_id}/poll` | 720 per hour | client IP |
+| `PUT /v1/icons/{title_id}` | 30 per hour | API key (the admin key is exempt) |
+
+Limits are token buckets: the full allowance is available at once, and one request comes back
+every hour / limit (every 6 min for `POST /v1/link`). A refused request gets
+`429 rate_limited` with `Retry-After: <seconds>`.
+
+## Presence timing
+
+- **Heartbeat:** while a title runs, `PUT /v1/presence` every 60 s, and immediately when the title,
+  name or details change.
+- **Timeout:** the relay clears the presence after 150 s without a `PUT`. A console that loses
+  Wi-Fi or sleeps therefore drops off Discord on its own.
+- **Updates:** the relay sends at most one change to Discord every 5 s per account. When several
+  `PUT`s arrive within that window, the latest wins; none are queued. Repeating an identical state
+  costs nothing.
+- **Elapsed time:** `elapsed_s` is how long the title has been running, as measured by the console.
+  The relay computes the start as `relay_now - elapsed_s`, so the console's clock does not need to
+  be right. Send the current value on every heartbeat. Omit it to show no timer.
+- **Stopping:** send `DELETE /v1/presence` when the title closes, rather than waiting for the
+  timeout.
+
+## Title ids
+
+A title id is 16 hexadecimal digits, either case, with a value of at least `0100000000010000`
+(so `0000000000000000` is invalid). The relay normalizes it to upper case.
+
+## Routes
+
+### `POST /v1/link`
+
+Starts linking. No auth, no body.
+
+**200**
+
+```json
+{
+  "link_id": "q3hJ1Wc0p1n3Yb2mY0dZ8g",
+  "user_code": "ABCD-EFGH",
+  "verification_uri_complete": "https://discord.com/activate?user_code=ABCD-EFGH",
+  "expires_in": 300,
+  "interval": 5
+}
+```
+
+Show `user_code` and `verification_uri_complete` (for example as a QR code) to the user, who
+approves the request on another device. Then poll every `interval` seconds until a final state or
+`expires_in` seconds have passed. Keep `link_id` private: whoever polls with it receives the API key.
+
+Errors: `429 rate_limited`, `502 discord_unavailable`.
+
+### `POST /v1/link/{link_id}/poll`
+
+No auth, no body.
+
+**200**, one of:
+
+```json
+{"state": "pending"}
+{"state": "denied"}
+{"state": "expired"}
+{"state": "linked", "api_key": "Zk3...43 chars...", "username": "alice"}
+```
+
+- `pending`: keep polling every `interval` seconds. Polling faster is harmless but only returns
+  `pending`.
+- `denied`: the user refused. Final.
+- `expired`: the code expired. Final; start again with `POST /v1/link`.
+- `linked`: store `api_key`. Final. Polling again within 60 s returns the same key, so a response
+  lost to a dropped connection can be fetched again; after that the link answers `expired`.
+
+Linking a Discord account that is already linked replaces its key: the previous key stops working
+at once.
+
+Errors: `404 unknown_link` (never issued, or forgotten some time after it ended), `429 rate_limited`,
+`502 discord_unavailable` (retry the poll later).
+
+### `GET /v1/me`
+
+Auth: API key.
+
+**200**
+
+```json
+{"username": "alice", "link_broken": false, "presence": {"name": "Zelda", "details": "Chapter 1"}}
+```
+
+`presence` is the activity last sent to Discord, or `null` when none is shown.
+
+Errors: `401 unauthorized`.
+
+### `DELETE /v1/me`
+
+Auth: API key. Unlinks the account: the presence is cleared, the Discord authorization is revoked
+and the key stops working.
+
+**204**, no body. Errors: `401 unauthorized`.
+
+### `PUT /v1/presence`
+
+Auth: API key. Body (at most 4096 bytes):
+
+```json
+{"name": "The Legend of Zelda", "details": "Chapter 1", "elapsed_s": 754, "title_id": "0100A0D02127E000"}
+```
+
+| Field | Type | Rule |
+|---|---|---|
+| `name` | string | Required, 1–128 bytes. Shown as the activity name and the image tooltip. |
+| `details` | string | Optional, 0–128 bytes. Absent or `null` means empty. |
+| `elapsed_s` | integer | Optional, 0–31536000. Floats, booleans and strings are refused. |
+| `title_id` | string | Optional, a valid title id. Selects the icon. |
+
+`name` and `details` are shown exactly as sent. `null` counts as absent for the optional fields.
+The image is the title's published icon when there is one, otherwise the Switch logo.
+
+**204**, no body.
+
+Errors, checked in this order: `401 unauthorized`, `409 link_broken`, `413 too_large` (body over
+4096 bytes), `400 invalid_body` (not a JSON object, or a field breaks a rule). A body over the
+global 262144-byte limit gets `413` before any of these.
+
+### `DELETE /v1/presence`
+
+Auth: API key. Clears the presence now. No body.
+
+**204**, no body. Errors: `401 unauthorized`.
+
+### `PUT /v1/icons/{title_id}`
+
+Auth: API key, or the admin key. Body: the raw icon bytes (`Content-Type: image/jpeg`).
+
+Rules:
+
+- The body is at most 131072 bytes and is a baseline or progressive JPEG of exactly 256×256 pixels.
+  The relay re-encodes it before serving it.
+- Each linked Discord account has one vote per title and image. An image is published once
+  `PUBLISH_THRESHOLD` distinct accounts (2 by default) uploaded the same bytes for the same title.
+- A published icon is never replaced by votes.
+- An upload with the admin key publishes, or replaces, the icon at once.
+- Votes that do not reach the threshold within 30 days expire.
+- Accounts with `link_broken` can still vote.
+
+Responses:
+
+| Status | Body | Meaning |
+|---|---|---|
+| 200 | `{"status": "published"}` | This upload published the icon |
+| 202 | `{"status": "pending", "votes": 1, "needed": 2}` | Vote recorded, waiting for others |
+| 200 | `{"status": "already_published"}` | An icon is already published for this title |
+
+Errors: `400 invalid_icon` (bad image or title id), `400 blocked`, `401 unauthorized`,
+`413 too_large`, `429 rate_limited`.
+
+The sysmodule should upload a title's icon once, after the first `PUT /v1/presence` for that
+title, and not retry after `200`, `202` or `400`.
+
+### `DELETE /v1/icons/{title_id}`
+
+Auth: admin key. Unpublishes the icon and blocks its image, so the same bytes cannot be voted in
+again. No body.
+
+**204**, no body. Errors: `401 unauthorized` (missing or non-admin key), `404 not_found` (nothing
+published).
+
+### `GET /icons/{title_id}.jpg`
+
+No auth. Serves a published icon; this is the URL Discord loads.
+
+**200** with `Content-Type: image/jpeg` and `Cache-Control: public, max-age=86400`.
+
+Errors: `404 not_found` (invalid title id or no published icon).
+
+### `GET /healthz`
+
+No auth. **200** with the text body `ok`.
+
+## Examples
+
+Link:
+
+```
+POST /v1/link HTTP/1.1
+Host: rpc.0xsharkboy.dev
+Content-Length: 0
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"link_id":"q3hJ1Wc0p1n3Yb2mY0dZ8g","user_code":"ABCD-EFGH","verification_uri_complete":"https://discord.com/activate?user_code=ABCD-EFGH","expires_in":300,"interval":5}
+```
+
+Heartbeat:
+
+```
+PUT /v1/presence HTTP/1.1
+Host: rpc.0xsharkboy.dev
+Authorization: Bearer Zk3...
+Content-Type: application/json
+Content-Length: 98
+
+{"name":"The Legend of Zelda","details":"Chapter 1","elapsed_s":754,"title_id":"0100A0D02127E000"}
+
+HTTP/1.1 204 No Content
+```
+
+Broken link:
+
+```
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+
+{"error":"link_broken","message":"The Discord link is broken, link the account again"}
+```
+
+Rate limited:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 360
+Content-Type: application/json
+
+{"error":"rate_limited","message":"Too many requests, retry later"}
+```

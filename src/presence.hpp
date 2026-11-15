@@ -41,6 +41,12 @@ public:
     // The activity last sent to the backend; nullopt when cleared, not yet sent or unknown.
     std::optional<ActivitySpec> current(const std::string& discord_id);
 
+    // Shutdown, on the SDK thread once no request can enqueue anymore. clear_all() discards queued
+    // commands and clears every shown activity; disconnect_all() then ends every client. Pump the
+    // backend in between so the clears are delivered before the connections close.
+    void clear_all();
+    void disconnect_all();
+
 private:
     struct Command {
         enum Kind { Put, Clear, Drop, Icon, Token } kind;
