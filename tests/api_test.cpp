@@ -408,6 +408,8 @@ TEST_CASE("api: DELETE /v1/me unlinks and the key stops working") {
     CHECK(del->status == 204);
     check_error(f.cli->Get("/v1/me", bearer(key)), 401, "unauthorized");
     check_error(f.cli->Delete("/v1/me", bearer(key)), 401, "unauthorized");
+    CHECK(f.oauth.revoked.empty());
+    f.links->flush_revocations();
     CHECK(f.oauth.revoked.size() == 2);
     f.presence->tick();
     CHECK(f.backend.calls(Kind::Disconnect, "42").size() == 1);

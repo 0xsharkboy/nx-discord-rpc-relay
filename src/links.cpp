@@ -1,5 +1,7 @@
 #include "links.hpp"
 
+#include <exception>
+#include <iostream>
 #include <utility>
 
 #include "crypto.hpp"
@@ -155,10 +157,25 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
 void Links::unlink(const std::string& discord_id) {
     auto u = db_.user_by_discord_id(discord_id);
     if (!u) return;
-    for (const auto* sealed : {&u->access_sealed, &u->refresh_sealed}) {
-        if (auto token = open(key_, *sealed)) oauth_.revoke(*token);
-    }
     db_.delete_user(discord_id);
+    std::lock_guard lk(revoke_mu_);
+    for (const auto* sealed : {&u->access_sealed, &u->refresh_sealed})
+        if (auto token = open(key_, *sealed)) pending_revocations_.push_back(std::move(*token));
+}
+
+void Links::flush_revocations() {
+    std::vector<std::string> tokens;
+    {
+        std::lock_guard lk(revoke_mu_);
+        tokens.swap(pending_revocations_);
+    }
+    for (const auto& token : tokens) {
+        try {
+            oauth_.revoke(token);
+        } catch (const std::exception& e) {
+            std::cerr << "relay: token revocation failed: " << e.what() << '\n';
+        }
+    }
 }
 
 }  // namespace relay

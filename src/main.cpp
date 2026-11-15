@@ -40,6 +40,8 @@ constexpr int kIconPerHour = 30;
 constexpr auto kTickEvery = 10ms;
 constexpr auto kRefreshEvery = 10min;
 constexpr auto kExpireVotesEvery = 24h;
+// How long an unlinked account's tokens may wait before their revocation is sent.
+constexpr auto kRevokeEvery = 2s;
 constexpr int64_t kVoteLifetimeS = 30 * 86400;
 constexpr auto kClearDrain = 1500ms;
 constexpr auto kDisconnectDrain = 500ms;
@@ -84,7 +86,7 @@ void pump(IPresenceBackend& backend, std::chrono::milliseconds total) {
     }
 }
 
-void background_jobs(Refresher& refresher, Db& db, StopFlag& stop) {
+void background_jobs(Refresher& refresher, Links& links, Db& db, StopFlag& stop) {
     auto next_refresh = std::chrono::steady_clock::now();
     auto next_expiry = next_refresh;
     while (!stop.is_set()) {
@@ -101,7 +103,10 @@ void background_jobs(Refresher& refresher, Db& db, StopFlag& stop) {
             }
             next_expiry = now + kExpireVotesEvery;
         }
-        stop.wait_for(std::min(next_refresh, next_expiry) - std::chrono::steady_clock::now());
+        links.flush_revocations();
+        stop.wait_for(std::min({next_refresh - std::chrono::steady_clock::now(),
+                                next_expiry - std::chrono::steady_clock::now(),
+                                std::chrono::steady_clock::duration(kRevokeEvery)}));
     }
 }
 
@@ -201,7 +206,7 @@ int main() {
     });
 
     std::thread jobs([&] {
-        background_jobs(refresher, *db, stop);
+        background_jobs(refresher, links, *db, stop);
         jobs_done = true;
     });
 

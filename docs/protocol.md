@@ -168,8 +168,9 @@ Errors: `401 unauthorized`.
 
 ### `DELETE /v1/me`
 
-Auth: API key. Unlinks the account: the presence is cleared, the Discord authorization is revoked
-and the key stops working.
+Auth: API key. Unlinks the account: the key stops working at once, the presence is cleared, the
+account's pending icon votes are dropped, and the Discord authorization is revoked a few seconds
+later in the background (best effort).
 
 **204**, no body. Errors: `401 unauthorized`.
 

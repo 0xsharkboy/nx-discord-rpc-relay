@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "db.hpp"
 #include "oauth.hpp"
@@ -31,7 +32,11 @@ public:
 
     std::optional<LinkStart> start();
     LinkPoll poll(const std::string& link_id);
+    // Deletes the user at once (the key dies with it) and queues the Discord revocations, so the
+    // request never waits on Discord.
     void unlink(const std::string& discord_id);
+    // Sends the queued revocations, best effort. Called from the background jobs thread.
+    void flush_revocations();
 
     std::function<void(const std::string& discord_id)> on_relinked;
 
@@ -56,6 +61,8 @@ private:
     std::function<int64_t()> now_ms_;
     std::mutex mu_;
     std::unordered_map<std::string, Entry> entries_;
+    std::mutex revoke_mu_;
+    std::vector<std::string> pending_revocations_;
 };
 
 }  // namespace relay

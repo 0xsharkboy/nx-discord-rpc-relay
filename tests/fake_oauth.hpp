@@ -25,6 +25,7 @@ public:
     std::string throw_on_refresh_token;
     // Runs inside refresh(), outside the fake's lock, to simulate work racing the Discord call.
     std::function<void()> during_refresh;
+    std::string throw_on_revoke_token;
     int authorize_calls = 0, poll_calls = 0, refresh_calls = 0;
     std::vector<std::string> polled_codes, refreshed_tokens, revoked;
 
@@ -59,6 +60,8 @@ public:
     void revoke(const std::string& token) override {
         std::lock_guard lk(mu_);
         revoked.push_back(token);
+        if (!throw_on_revoke_token.empty() && token == throw_on_revoke_token)
+            throw std::runtime_error("revoke failed");
     }
 
 private:

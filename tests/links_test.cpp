@@ -214,14 +214,20 @@ TEST_CASE("links: unlink revokes both tokens and deletes the row") {
     f.oauth.poll_results.push_back(FakeOAuth::granted());
     auto p = f.links->poll(id);
     f.links->unlink("42");
-    CHECK(f.oauth.revoked == std::vector<std::string>{"access-1", "refresh-1"});
+    // The key dies at once; the Discord calls wait for the background flush.
+    CHECK(f.oauth.revoked.empty());
     CHECK_FALSE(f.db->user_by_discord_id("42"));
     CHECK_FALSE(f.db->user_by_key_hash(sha256_hex(p.api_key)));
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked == std::vector<std::string>{"access-1", "refresh-1"});
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked.size() == 2);
 }
 
 TEST_CASE("links: unlink skips tokens that fail to decrypt and ignores unknown users") {
     Fixture f;
     f.links->unlink("nobody");
+    f.links->flush_revocations();
     CHECK(f.oauth.revoked.empty());
     User u;
     u.discord_id = "9";
@@ -231,6 +237,7 @@ TEST_CASE("links: unlink skips tokens that fail to decrypt and ignores unknown u
     u.refresh_sealed = seal(f.key, "refresh-9");
     f.db->upsert_user(u);
     f.links->unlink("9");
+    f.links->flush_revocations();
     CHECK(f.oauth.revoked == std::vector<std::string>{"refresh-9"});
     CHECK_FALSE(f.db->user_by_discord_id("9"));
 }
@@ -262,4 +269,15 @@ TEST_CASE("links: an oauth exception leaves the entry able to expire and be purg
     f.now += 400'000;
     CHECK(f.links->poll(id).state == LinkPoll::Expired);
     CHECK(f.links->poll(id).state == LinkPoll::Unknown);
+}
+
+TEST_CASE("links: a failing revoke does not stop the others") {
+    Fixture f;
+    auto id = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted());
+    f.links->poll(id);
+    f.links->unlink("42");
+    f.oauth.throw_on_revoke_token = "access-1";
+    CHECK_NOTHROW(f.links->flush_revocations());
+    CHECK(f.oauth.revoked == std::vector<std::string>{"access-1", "refresh-1"});
 }
