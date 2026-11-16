@@ -1,0 +1,13 @@
+nx-discord-rpc relay
+Copyright (C) 2026 0xsharkboy
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU Affero General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version. See LICENSE for the full text.
+
+Additional permission under GNU AGPL version 3 section 7
+
+If you modify this program, or any covered work, by linking or combining it with the Discord
+Social SDK (or a modified version of that library), containing parts covered by the terms of the
+Discord Social SDK license, the licensors of this program grant you additional permission to
+convey the resulting work.
