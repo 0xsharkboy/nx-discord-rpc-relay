@@ -29,6 +29,8 @@ The relay keeps one SQLite database, `relay.db` in the data directory, with thes
     below);
   - `access_expires_at`: when the access token expires;
   - `link_broken`: set when Discord no longer accepts the tokens.
+  - `last_seen_at`: when the console last sent a presence update, kept to within an hour (see
+    [Inactive accounts](#inactive-accounts)).
 - `votes`: icon votes, one row per (title id, image hash, Discord user id) with its creation time.
   See [Icons](#icons).
 - `published_icons`: the title id, image hash and publication time of each published icon. It does
@@ -76,7 +78,8 @@ The account is also marked `link_broken` when Discord refuses the access token w
 connects you for presence: either Discord answers `401 Unauthorized` when the Social SDK hands it
 the token, or it closes the connection with "authentication failed".
 
-A broken link keeps its row, including the encrypted tokens, until you unlink or link again. The
+A broken link keeps its row, including the encrypted tokens, until you unlink, link again, or the
+account has been inactive for 90 days (see [Inactive accounts](#inactive-accounts)). The
 console then gets `409 link_broken` on presence updates and should offer to link again.
 
 ## Unlinking
@@ -92,8 +95,23 @@ revocation not yet sent when the relay shuts down is dropped (the log then says 
 always remove the application's access yourself in Discord, under User Settings > Authorized Apps.
 
 Linking the same Discord account again (for example from another console) replaces the stored
-tokens and the API key: the previous key stops working at once. The previous tokens are not
-revoked by the relay.
+tokens and the API key: the previous key stops working at once. The relay does not revoke the
+replaced tokens: Discord revokes every token it issued to the application for an account as soon as
+any one of them is revoked, so doing so would also cut off the new link. The replaced tokens are
+revoked along with the current ones when you unlink, when the account is deleted for inactivity, or
+when you remove the application in Discord. Until then they expire on their own.
+
+## Inactive accounts
+
+An account with no presence update (`PUT /v1/presence`) for **90 days** is deleted, whether its
+link works or is broken. Linking counts as activity, and updates refused with `409 link_broken` do
+not. The deletion is the same as an unlink: the `users` row and all of the account's icon votes
+are deleted, and both Discord tokens are revoked a few seconds later, best effort. The console then
+gets `401 unauthorized` and has to link again.
+
+To limit writes, `last_seen_at` is updated at most once an hour per account. The check runs once a
+day, so an account is deleted about 90 days after its last update, at most a day later. Accounts that existed
+before this rule count as seen at the upgrade.
 
 ## Presence
 
@@ -139,19 +157,23 @@ The relay writes to standard output and standard error only.
 - **Errors:** failures are logged with a short description. Some of them name the Discord user id
   concerned (a failed refresh, a dropped Discord connection, a presence update Discord refused,
   errors reported by the Social SDK).
+- **Maintenance:** the daily cleanup logs how many inactive accounts it deleted, without naming them.
 
 How long these logs are kept depends on the host. With the Compose file in `deploy/`, Docker keeps at
 most three log files of 10 MB each and rotates older lines out.
 
 ## On the official instance
 
-> **TODO (author):** this section is a placeholder. Fill it in before publishing; nothing below is
-> verified yet.
+The official relay runs at `https://nx-discord-rpc.0xsharkboy.dev` and is operated by 0xsharkboy.
 
-- **Reverse proxy logs:** TODO: what the proxy in front of the relay logs (IP addresses?) and how
-  long it keeps them.
-- **Relay log retention:** TODO: how long the host keeps the relay's logs.
-- **Backups:** TODO: whether `./data` is backed up, where, how often, and how long backups are kept.
+- **Reverse proxy:** a Caddy server terminates TLS in front of the relay. It has no access log for
+  this site, so ordinary requests leave no IP on disk. Caddy's own error log, kept in the system
+  journal of the proxy host, can record a client IP when a request fails at the proxy; it is kept
+  according to that host's journal rotation.
+- **Relay logs:** the container logs are rotated at three files of 10 MB each and contain no IP
+  addresses (see [Logs](#logs)).
+- **Backups:** there are no automatic backups of the relay data yet. If the data were lost,
+  consoles would only need to link again.
 
 ## Who operates it
 

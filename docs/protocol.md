@@ -66,7 +66,9 @@ Clients must branch on `error`, never on `message`.
 ### Client behavior
 
 - **401** on a keyed route: the key is dead (the account was unlinked, or relinked from another
-  console). Stop sending presence and offer to link again.
+  console). Stop sending presence and offer to link again. An account that sends no
+  `PUT /v1/presence` for 90 days is deleted by the relay, so its key also gets `401` and the console
+  must link again.
 - **409 `link_broken`**: stop sending presence and offer to link again. `GET /v1/me` reports
   `link_broken: true` in this state.
 - **429** and **5xx**: back off. When `Retry-After` (seconds) is present, wait at least that long;
