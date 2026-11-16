@@ -7,6 +7,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_compile_options(-Wall -Wextra)
 
+# The Discord Social SDK is proprietary and not part of this repository: see docs/self-hosting.md.
+set(DISCORD_SDK_DIR ${CMAKE_SOURCE_DIR}/third_party/discord_social_sdk
+    CACHE PATH "Directory holding the Discord Social SDK (include/ and lib/release/)")
+set(SDK_DIR ${DISCORD_SDK_DIR})
+if(NOT EXISTS ${SDK_DIR}/include/discordpp.h OR NOT EXISTS ${SDK_DIR}/lib/release/libdiscord_partner_sdk.so)
+    message(FATAL_ERROR "Discord Social SDK not found in ${SDK_DIR}: see docs/self-hosting.md")
+endif()
+
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
@@ -46,7 +54,6 @@ FetchContent_MakeAvailable(doctest nlohmann_json httplib stb)
 add_library(stb INTERFACE)
 target_include_directories(stb SYSTEM INTERFACE ${stb_SOURCE_DIR})
 
-set(SDK_DIR ${CMAKE_SOURCE_DIR}/third_party/discord_social_sdk)
 add_library(discord_sdk SHARED IMPORTED)
 set_target_properties(discord_sdk PROPERTIES
     IMPORTED_LOCATION ${SDK_DIR}/lib/release/libdiscord_partner_sdk.so

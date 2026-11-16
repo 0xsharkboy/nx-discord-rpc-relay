@@ -5,3 +5,4 @@ data/
 *.db
 .superpowers/
 deploy/relay.env
+third_party/discord_social_sdk/

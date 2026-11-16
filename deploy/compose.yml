@@ -1,5 +1,6 @@
 services:
   relay:
+    # The official instance's private image. Self-hosting: set your own tag (docs/self-hosting.md).
     image: ghcr.io/0xsharkboy/nx-discord-rpc-relay:main
     env_file: relay.env
     restart: unless-stopped

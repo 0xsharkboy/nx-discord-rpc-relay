@@ -5,3 +5,4 @@ build/
 data/
 deploy/relay.env
 *.db
+third_party/discord_social_sdk/.git

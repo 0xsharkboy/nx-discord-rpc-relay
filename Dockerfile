@@ -7,7 +7,8 @@ WORKDIR /src
 COPY CMakeLists.txt ./
 COPY src ./src
 COPY tests ./tests
-COPY third_party ./third_party
+# The Discord Social SDK is not in the repository: place it there first (docs/self-hosting.md).
+COPY third_party/discord_social_sdk ./third_party/discord_social_sdk
 RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build \
     && ctest --test-dir build --output-on-failure
