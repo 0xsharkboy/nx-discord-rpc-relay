@@ -1,5 +1,7 @@
 # How the relay works
 
+For the official instance, see also the [privacy policy](../PRIVACY.md) and [terms of service](../TERMS.md).
+
 This page describes what the relay does with your data. It is written from the code in this
 repository: the official instance at `https://nx-discord-rpc.0xsharkboy.dev` is operated by
 0xsharkboy and runs this relay. Anything that happens outside the relay process (the reverse proxy

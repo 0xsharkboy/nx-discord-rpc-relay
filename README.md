@@ -19,6 +19,11 @@ what the homebrew uses by default.
   your own image, deploy it, and point your consoles at it.
 - [Protocol](docs/protocol.md): the HTTP API between the console and the relay.
 
+## Privacy and terms
+
+The official instance is covered by its [privacy policy](PRIVACY.md) and
+[terms of service](TERMS.md). A self-hosted instance is the responsibility of whoever runs it.
+
 ## Build
 
 The relay is C++20 (cpp-httplib, SQLite, OpenSSL) and needs the Discord Social SDK, which is
