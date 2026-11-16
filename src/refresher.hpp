@@ -16,8 +16,9 @@ public:
     Refresher(IOAuth& oauth, Db& db, const std::array<uint8_t, 32>& token_key, Presence& presence,
               std::function<int64_t()> now_s);
 
-    // Never throws; a failure for one user does not stop the others.
-    void run_once();
+    // Never throws; a failure for one user does not stop the others. Once `stopping` returns true,
+    // the run ends after the user in progress.
+    void run_once(const std::function<bool()>& stopping = {});
 
 private:
     // False when Discord refused the relay's client credentials, which ends the run.

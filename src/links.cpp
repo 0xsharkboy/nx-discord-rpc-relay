@@ -11,6 +11,10 @@ namespace relay {
 namespace {
 constexpr int64_t kLinkedKeepMs = 60'000;
 constexpr int64_t kSlowDownMs = 5'000;
+
+void log_dropped(size_t count) {
+    if (count > 0) std::cerr << "relay: shutting down, " << count << " token revocation(s) dropped\n";
+}
 }  // namespace
 
 Links::Links(IOAuth& oauth, Db& db, const std::array<uint8_t, 32>& token_key,
@@ -174,8 +178,7 @@ void Links::flush_revocations() {
         {
             std::lock_guard lk(revoke_mu_);
             if (revoke_stop_) {
-                std::cerr << "relay: shutting down, " << tokens.size() - i
-                          << " token revocation(s) dropped\n";
+                log_dropped(tokens.size() - i);
                 return;
             }
         }
@@ -191,7 +194,10 @@ void Links::run_revocations(std::chrono::milliseconds every) {
     for (;;) {
         {
             std::lock_guard lk(revoke_mu_);
-            if (revoke_stop_) return;
+            if (revoke_stop_) {
+                log_dropped(pending_revocations_.size());
+                return;
+            }
         }
         flush_revocations();
         std::unique_lock lk(revoke_mu_);

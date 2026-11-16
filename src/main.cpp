@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <pthread.h>
@@ -46,6 +47,8 @@ constexpr auto kRevokeEvery = 2s;
 constexpr int64_t kVoteLifetimeS = 30 * 86400;
 constexpr auto kClearDrain = 1500ms;
 constexpr auto kDisconnectDrain = 500ms;
+// How long shutdown waits, after the drains, for a revoke still in flight.
+constexpr auto kRevokeGrace = 1s;
 
 int64_t unix_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -93,7 +96,7 @@ void background_jobs(Refresher& refresher, Db& db, StopFlag& stop) {
     while (!stop.is_set()) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= next_refresh) {
-            refresher.run_once();
+            refresher.run_once([&stop] { return stop.is_set(); });
             next_refresh = now + kRefreshEvery;
         }
         if (now >= next_expiry) {
@@ -214,8 +217,13 @@ int main() {
     });
 
     // Revocations get their own thread: a refresh run never delays them, and at shutdown only a
-    // revoke already in flight is waited for, while the SDK drains.
-    std::thread revoker([&] { links.run_revocations(kRevokeEvery); });
+    // revoke already in flight is waited for, during the SDK drains and kRevokeGrace at most.
+    std::promise<void> revoker_exited;
+    auto revoker_done = revoker_exited.get_future();
+    std::thread revoker([&] {
+        links.run_revocations(kRevokeEvery);
+        revoker_exited.set_value();
+    });
 
     std::thread jobs([&] {
         background_jobs(refresher, *db, stop);
@@ -256,6 +264,14 @@ int main() {
     } catch (const std::exception& e) {
         std::cerr << "relay: shutdown cleanup failed: " << e.what() << '\n';
     }
+    const int rc = listen_failed ? 1 : 0;
+    // A revoke stuck on the network (every address of the host, DNS) must not outlast the container
+    // stop timeout. Returning would destroy Links and the OAuth client under it, so exit instead.
+    if (revoker_done.wait_for(kRevokeGrace) != std::future_status::ready) {
+        std::cerr << "relay: revocation still in flight, exiting" << std::endl;
+        std::cout.flush();
+        std::_Exit(rc);
+    }
     revoker.join();
-    return listen_failed ? 1 : 0;
+    return rc;
 }

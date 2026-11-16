@@ -235,3 +235,29 @@ TEST_CASE("refresher: a revoked old grant racing a relink does not break the new
     f.presence->tick();
     CHECK(f.backend.calls(Kind::Disconnect).empty());
 }
+
+TEST_CASE("refresher: a stop request ends the run after the user in progress") {
+    Fixture f;
+    f.add_user("1", kNow + 3600);
+    f.add_user("2", kNow + 3600);
+    f.add_user("3", kNow + 3600);
+    bool stopping = false;
+    f.oauth.during_refresh = [&] { stopping = true; };
+    f.oauth.refresh_default = refreshed("access-new", "refresh-new");
+
+    f.refresher->run_once([&] { return stopping; });
+
+    REQUIRE(f.oauth.refreshed_tokens.size() == 1);
+    const auto id = f.oauth.refreshed_tokens[0].substr(std::string("refresh-").size());
+    auto u = f.db->user_by_discord_id(id);
+    REQUIRE(u);
+    CHECK(open(f.key, u->refresh_sealed) == std::optional<std::string>("refresh-new"));
+}
+
+TEST_CASE("refresher: a run without a stop predicate refreshes every expiring user") {
+    Fixture f;
+    f.add_user("1", kNow + 3600);
+    f.add_user("2", kNow + 3600);
+    f.refresher->run_once();
+    CHECK(f.oauth.refreshed_tokens.size() == 2);
+}

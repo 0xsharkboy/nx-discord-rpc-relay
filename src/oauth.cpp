@@ -15,7 +15,8 @@ using nlohmann::json;
 
 constexpr const char* kHost = "discord.com";
 constexpr const char* kScope = "openid sdk.social_layer_presence";
-// Per network step. Short so that shutdown never waits long on a best-effort revoke in flight.
+// Per network step (each address tried, each TLS or I/O wait), not per call. Keeps a best-effort
+// revoke short; shutdown does not rely on it and bounds its own wait.
 constexpr time_t kRevokeTimeoutS = 2;
 
 std::optional<json> parse_object(std::string_view body) {

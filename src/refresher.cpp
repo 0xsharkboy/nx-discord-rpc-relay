@@ -15,10 +15,11 @@ Refresher::Refresher(IOAuth& oauth, Db& db, const std::array<uint8_t, 32>& token
                      std::function<int64_t()> now_s)
     : oauth_(oauth), db_(db), key_(token_key), presence_(presence), now_s_(std::move(now_s)) {}
 
-void Refresher::run_once() {
+void Refresher::run_once(const std::function<bool()>& stopping) {
     try {
         const int64_t now = now_s_();
         for (const User& u : db_.users_expiring_before(now + kWindowS)) {
+            if (stopping && stopping()) return;
             try {
                 if (!refresh_user(u, now)) {
                     // Every other user would be refused the same way.
