@@ -140,6 +140,13 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
     // The replaced tokens are not revoked: Discord revokes every token of the application for a user
     // when any one is revoked, which would kill this new link too. They die with the next revocation.
     db_.upsert_user(u);
+    // After the upsert: an unlink or a sweep deleting the old row queues under this lock, so its
+    // entries are either already queued here or never queued.
+    {
+        std::lock_guard lk(revoke_mu_);
+        std::erase_if(pending_revocations_,
+                      [&](const Revocation& r) { return r.discord_id == t.discord_id; });
+    }
 
     {
         std::lock_guard lk(mu_);
@@ -165,8 +172,10 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
 bool Links::unlink(const std::string& discord_id, const std::string& key_hash) {
     auto u = db_.user_by_key_hash(key_hash);
     if (!u || u->discord_id != discord_id) return false;
+    // Deleted and queued under one lock, so a link committed after the delete drops these entries.
+    std::lock_guard lk(revoke_mu_);
     if (!db_.delete_user(discord_id, key_hash)) return false;
-    queue_revocations(*u);
+    queue_revocations_locked(*u);
     return true;
 }
 
@@ -175,35 +184,35 @@ std::vector<std::string> Links::expire_inactive() {
     std::vector<std::string> removed;
     for (const User& u : db_.users_inactive_before(cutoff)) {
         // Guarded on the key and the cutoff: a relink or a PUT since the snapshot keeps the account.
+        std::lock_guard lk(revoke_mu_);
         if (!db_.delete_inactive_user(u.discord_id, u.key_hash, cutoff)) continue;
-        queue_revocations(u);
+        queue_revocations_locked(u);
         removed.push_back(u.discord_id);
     }
     return removed;
 }
 
-void Links::queue_revocations(const User& u) {
-    std::lock_guard lk(revoke_mu_);
+void Links::queue_revocations_locked(const User& u) {
     for (const auto* sealed : {&u.access_sealed, &u.refresh_sealed})
-        if (auto token = open(key_, *sealed)) pending_revocations_.push_back(std::move(*token));
+        if (auto token = open(key_, *sealed)) pending_revocations_.push_back({u.discord_id, std::move(*token)});
 }
 
 void Links::flush_revocations() {
-    std::vector<std::string> tokens;
-    {
-        std::lock_guard lk(revoke_mu_);
-        tokens.swap(pending_revocations_);
-    }
-    for (size_t i = 0; i < tokens.size(); ++i) {
+    for (;;) {
+        std::string token;
         {
             std::lock_guard lk(revoke_mu_);
+            if (pending_revocations_.empty()) return;
             if (revoke_stop_) {
-                log_dropped(tokens.size() - i);
+                log_dropped(pending_revocations_.size());
+                pending_revocations_.clear();
                 return;
             }
+            token = std::move(pending_revocations_.front().token);
+            pending_revocations_.pop_front();
         }
         try {
-            oauth_.revoke(tokens[i]);
+            oauth_.revoke(token);
         } catch (const std::exception& e) {
             std::cerr << "relay: token revocation failed: " << e.what() << '\n';
         }

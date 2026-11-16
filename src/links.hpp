@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -46,6 +47,8 @@ public:
     // queues its revocations like unlink. Returns the discord ids removed.
     std::vector<std::string> expire_inactive();
     // Sends the queued revocations, best effort. Once stopped, drops whatever is left unsent.
+    // A link drops the revocations still queued for its account: Discord revokes every token of the
+    // application for a user when any one is revoked, so sending them would kill the new grant.
     void flush_revocations();
     // Flushes every `every` until stop_revocations(). Runs on its own thread.
     void run_revocations(std::chrono::milliseconds every);
@@ -68,7 +71,7 @@ private:
 
     void purge_locked(int64_t now);
     LinkPoll finish_grant(const std::string& link_id, const Tokens& t, int64_t now);
-    void queue_revocations(const User&);
+    void queue_revocations_locked(const User&);
 
     IOAuth& oauth_;
     Db& db_;
@@ -77,7 +80,11 @@ private:
     std::mutex mu_;
     std::unordered_map<std::string, Entry> entries_;
     std::mutex revoke_mu_;
-    std::vector<std::string> pending_revocations_;
+    struct Revocation {
+        std::string discord_id, token;
+    };
+    // Taken one at a time, so a link can still drop the entries of its account that are not sent yet.
+    std::deque<Revocation> pending_revocations_;
     std::condition_variable revoke_cv_;
     bool revoke_stop_ = false;
 };

@@ -437,3 +437,44 @@ TEST_CASE("links: the inactivity sweep keeps an account seen again after the sna
     CHECK(f.links->expire_inactive().empty());
     CHECK(f.db->user_by_key_hash(hash));
 }
+
+TEST_CASE("links: linking again drops that account's revocations still queued") {
+    Fixture f;
+    auto hash = link_as(f, "1");
+    auto other = link_as(f, "2");
+    REQUIRE(f.links->unlink("1", hash));
+    REQUIRE(f.links->unlink("2", other));
+    // "1" links again before the flush: revoking its old tokens would kill the new grant.
+    f.oauth.poll_results.push_back(FakeOAuth::granted("1", "u1", "access-new", "refresh-new"));
+    auto id = f.started();
+    REQUIRE(f.links->poll(id).state == LinkPoll::Linked);
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked == std::vector<std::string>{"access-2", "refresh-2"});
+}
+
+TEST_CASE("links: linking again after the inactivity sweep drops its queued revocations") {
+    Fixture f;
+    link_as(f, "1");
+    f.now += 91 * 86'400'000LL;
+    REQUIRE(f.links->expire_inactive() == std::vector<std::string>{"1"});
+    link_as(f, "1");
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked.empty());
+}
+
+TEST_CASE("links: a link during a flush drops that account's revocations not yet sent") {
+    Fixture f;
+    auto a = link_as(f, "1");
+    auto b = link_as(f, "2");
+    REQUIRE(f.links->unlink("2", b));
+    REQUIRE(f.links->unlink("1", a));
+    bool relinked = false;
+    f.oauth.during_revoke = [&](const std::string& token) {
+        if (token != "access-2" || relinked) return;
+        relinked = true;
+        link_as(f, "1");
+    };
+    f.links->flush_revocations();
+    CHECK(relinked);
+    CHECK(f.oauth.revoked == std::vector<std::string>{"access-2", "refresh-2"});
+}

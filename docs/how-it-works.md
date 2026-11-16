@@ -92,8 +92,10 @@ console then gets `409 link_broken` on presence updates and should offer to link
 - revokes your Discord access and refresh tokens a few seconds later, in the background.
 
 The revocation is best effort: the relay does not check Discord's answer and does not retry, and a
-revocation not yet sent when the relay shuts down is dropped (the log then says how many). You can
-always remove the application's access yourself in Discord, under User Settings > Authorized Apps.
+revocation not yet sent when the relay shuts down is dropped (the log then says how many). It is
+also skipped if the account links again before it is sent, since it would cut off the new link.
+You can always remove the application's access yourself in Discord, under User Settings >
+Authorized Apps.
 
 Linking the same Discord account again (for example from another console) replaces the stored
 tokens and the API key: the previous key stops working at once. The relay does not revoke the
