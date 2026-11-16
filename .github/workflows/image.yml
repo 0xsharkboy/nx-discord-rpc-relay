@@ -29,6 +29,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
+        env:
+          # The build record would be a public artifact once the repository is public; nothing in it is needed.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           push: true
