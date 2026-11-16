@@ -381,3 +381,78 @@ TEST_CASE("db: migrating a version 1 database keeps its users and marks them see
     auto again = t.open();
     CHECK(again->user_by_key_hash("h1")->last_seen_at == u->last_seen_at);
 }
+
+TEST_CASE("db: migrating a version 2 database keeps its users with no avatar") {
+    TempDb t;
+    {
+        sqlite3* raw = nullptr;
+        REQUIRE(sqlite3_open(t.path.string().c_str(), &raw) == SQLITE_OK);
+        REQUIRE(sqlite3_exec(raw,
+                             "CREATE TABLE users ("
+                             " discord_id TEXT PRIMARY KEY,"
+                             " username TEXT NOT NULL,"
+                             " key_hash TEXT NOT NULL UNIQUE,"
+                             " access_sealed BLOB NOT NULL,"
+                             " refresh_sealed BLOB NOT NULL,"
+                             " access_expires_at INTEGER NOT NULL,"
+                             " link_broken INTEGER NOT NULL DEFAULT 0,"
+                             " last_seen_at INTEGER NOT NULL DEFAULT 0);"
+                             "CREATE INDEX users_expires ON users(access_expires_at);"
+                             "CREATE INDEX users_last_seen ON users(last_seen_at);"
+                             "CREATE TABLE published_icons (title_id TEXT PRIMARY KEY,"
+                             " sha256 TEXT NOT NULL, published_at INTEGER NOT NULL);"
+                             "CREATE TABLE votes (title_id TEXT NOT NULL, sha256 TEXT NOT NULL,"
+                             " discord_id TEXT NOT NULL, created_at INTEGER NOT NULL,"
+                             " PRIMARY KEY (title_id, sha256, discord_id));"
+                             "CREATE INDEX votes_created ON votes(created_at);"
+                             "CREATE TABLE blocked_hashes (sha256 TEXT PRIMARY KEY);"
+                             "INSERT INTO users VALUES ('1', 'old', 'h1', x'01', x'02', 1000, 0, 777);"
+                             "PRAGMA user_version = 2;",
+                             nullptr, nullptr, nullptr) == SQLITE_OK);
+        sqlite3_close(raw);
+    }
+    auto db = t.open();
+    auto u = db->user_by_key_hash("h1");
+    REQUIRE(u);
+    CHECK(u->username == "old");
+    CHECK(u->last_seen_at == 777);
+    CHECK_FALSE(u->avatar);
+    db.reset();
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(t.path.string().c_str(), &raw) == SQLITE_OK);
+    int version = -1;
+    REQUIRE(sqlite3_exec(
+                raw, "PRAGMA user_version",
+                [](void* out, int, char** vals, char**) {
+                    *static_cast<int*>(out) = std::stoi(vals[0]);
+                    return 0;
+                },
+                &version, nullptr) == SQLITE_OK);
+    sqlite3_close(raw);
+    CHECK(version == 3);
+}
+
+TEST_CASE("db: update_identity stores username and avatar, and null clears it") {
+    TempDb t;
+    auto db = t.open();
+    db->upsert_user(make_user("1", "h1"));
+    CHECK_FALSE(db->user_by_discord_id("1")->avatar);
+
+    CHECK(db->update_identity("1", "h1", "alice2", std::string("0123456789abcdef0123456789abcdef")));
+    auto got = db->user_by_discord_id("1");
+    REQUIRE(got);
+    CHECK(got->username == "alice2");
+    CHECK(got->avatar == std::optional<std::string>("0123456789abcdef0123456789abcdef"));
+
+    CHECK(db->update_identity("1", "h1", "alice3", std::nullopt));
+    got = db->user_by_discord_id("1");
+    CHECK(got->username == "alice3");
+    CHECK_FALSE(got->avatar);
+
+    CHECK(db->update_identity("1", "h1", "alice3", std::string("aa")));
+    CHECK_FALSE(db->update_identity("1", "stale", "evil", std::nullopt));
+    CHECK_FALSE(db->update_identity("2", "h1", "evil", std::nullopt));
+    got = db->user_by_discord_id("1");
+    CHECK(got->username == "alice3");
+    CHECK(got->avatar == std::optional<std::string>("aa"));
+}

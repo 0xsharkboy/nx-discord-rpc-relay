@@ -18,6 +18,7 @@ struct User {
     std::string discord_id, username, key_hash;
     std::vector<uint8_t> access_sealed, refresh_sealed;
     int64_t access_expires_at = 0;
+    std::optional<std::string> avatar;
     bool link_broken = false;
     // Unix seconds of the last accepted PUT /v1/presence (or of the link), kept to within
     // kLastSeenResolutionS.
@@ -60,6 +61,9 @@ public:
     bool update_tokens(std::string_view discord_id, std::string_view key_hash, std::span<const uint8_t> access,
                        std::span<const uint8_t> refresh, int64_t expires_at);
     bool break_link(std::string_view discord_id, std::string_view key_hash);
+    // Rewrites the username and avatar (nullopt clears it). Returns whether a row changed.
+    bool update_identity(std::string_view discord_id, std::string_view key_hash, std::string_view username,
+                         const std::optional<std::string>& avatar);
     // Excludes users whose link is broken.
     std::vector<User> users_expiring_before(int64_t unix_s);
 

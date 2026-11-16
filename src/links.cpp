@@ -13,6 +13,12 @@ namespace {
 constexpr int64_t kLinkedKeepMs = 60'000;
 constexpr int64_t kSlowDownMs = 5'000;
 
+LinkPoll bare(LinkPoll::State state) {
+    LinkPoll p;
+    p.state = state;
+    return p;
+}
+
 void log_dropped(size_t count) {
     if (count > 0) std::cerr << "relay: shutting down, " << count << " token revocation(s) dropped\n";
 }
@@ -62,23 +68,26 @@ LinkPoll Links::poll(const std::string& link_id) {
         auto it = entries_.find(link_id);
         if (it == entries_.end()) {
             purge_locked(now);
-            return {LinkPoll::Unknown, {}, {}};
+            return bare(LinkPoll::Unknown);
         }
         Entry& e = it->second;
 
         auto answer = [&]() -> std::optional<LinkPoll> {
             if (e.state == LinkPoll::Linked) {
-                if (now - e.linked_at_ms < kLinkedKeepMs) return LinkPoll{LinkPoll::Linked, e.api_key, e.username};
+                if (now - e.linked_at_ms < kLinkedKeepMs)
+                    return LinkPoll{LinkPoll::Linked, e.api_key, e.username, e.discord_id, e.avatar};
                 e.api_key.clear();
                 e.username.clear();
+                e.discord_id.clear();
+                e.avatar.reset();
                 e.state = LinkPoll::Expired;
             }
-            if (e.state == LinkPoll::Expired || e.state == LinkPoll::Denied) return LinkPoll{e.state, {}, {}};
+            if (e.state == LinkPoll::Expired || e.state == LinkPoll::Denied) return bare(e.state);
             if (now >= e.expires_at_ms) {
                 e.state = LinkPoll::Expired;
-                return LinkPoll{LinkPoll::Expired, {}, {}};
+                return bare(LinkPoll::Expired);
             }
-            if (e.polling || now - e.last_poll_ms < e.interval_ms) return LinkPoll{LinkPoll::Pending, {}, {}};
+            if (e.polling || now - e.last_poll_ms < e.interval_ms) return bare(LinkPoll::Pending);
             return std::nullopt;
         }();
         if (answer) {
@@ -104,7 +113,7 @@ LinkPoll Links::poll(const std::string& link_id) {
     if (r.state == PollState::Granted && r.tokens) return finish_grant(link_id, *r.tokens, now);
 
     std::lock_guard lk(mu_);
-    LinkPoll out{LinkPoll::Pending, {}, {}};
+    LinkPoll out = bare(LinkPoll::Pending);
     if (auto it = entries_.find(link_id); it != entries_.end()) {
         Entry& e = it->second;
         switch (r.state) {
@@ -131,6 +140,7 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
     User u;
     u.discord_id = t.discord_id;
     u.username = t.username;
+    u.avatar = t.avatar;
     u.key_hash = sha256_hex(api_key);
     u.access_sealed = seal(key_, t.access_token);
     u.refresh_sealed = seal(key_, t.refresh_token);
@@ -155,6 +165,8 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
             e.state = LinkPoll::Linked;
             e.api_key = api_key;
             e.username = t.username;
+            e.discord_id = t.discord_id;
+            e.avatar = t.avatar;
             e.linked_at_ms = now;
         }
     }
@@ -166,7 +178,7 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
         } catch (...) {
         }
     }
-    return {LinkPoll::Linked, std::move(api_key), t.username};
+    return {LinkPoll::Linked, std::move(api_key), t.username, t.discord_id, t.avatar};
 }
 
 bool Links::unlink(const std::string& discord_id, const std::string& key_hash) {

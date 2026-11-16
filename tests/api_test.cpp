@@ -240,6 +240,51 @@ TEST_CASE("api: the link flow gives an api key that works for GET /v1/me") {
     CHECK(redacted);
 }
 
+TEST_CASE("api: poll linked JSON carries discord_id and avatar") {
+    Fixture f;
+    const std::string hash = "0123456789abcdef0123456789abcdef";
+    auto link = [&](const std::string& id, const std::optional<std::string>& avatar) {
+        f.oauth.poll_results.push_back(FakeOAuth::granted(id, "u" + id, "a" + id, "r" + id, 604800, avatar));
+        auto start = f.cli->Post("/v1/link");
+        REQUIRE(start);
+        auto link_id = body_of(start)["link_id"].get<std::string>();
+        f.now += 5000;
+        auto poll = f.cli->Post("/v1/link/" + link_id + "/poll");
+        REQUIRE(poll);
+        REQUIRE(poll->status == 200);
+        return body_of(poll);
+    };
+    auto with = link("42", hash);
+    CHECK(with["state"] == "linked");
+    CHECK(with["discord_id"] == "42");
+    CHECK(with["avatar"] == hash);
+    auto without = link("43", std::nullopt);
+    CHECK(without["discord_id"] == "43");
+    REQUIRE(without.contains("avatar"));
+    CHECK(without["avatar"].is_null());
+}
+
+TEST_CASE("api: GET /v1/me returns discord_id and avatar") {
+    Fixture f;
+    const std::string hash = "0123456789abcdef0123456789abcdef";
+    auto key = f.link("42", "alice");
+    auto key2 = f.link("43", "bob");
+    REQUIRE(f.db->update_identity("42", sha256_hex(key), "alice", hash));
+    auto m = body_of(f.cli->Get("/v1/me", bearer(key)));
+    CHECK(m["discord_id"] == "42");
+    CHECK(m["avatar"] == hash);
+    auto m2 = body_of(f.cli->Get("/v1/me", bearer(key2)));
+    CHECK(m2["discord_id"] == "43");
+    REQUIRE(m2.contains("avatar"));
+    CHECK(m2["avatar"].is_null());
+
+    f.db->set_link_broken("42", true);
+    auto broken = body_of(f.cli->Get("/v1/me", bearer(key)));
+    CHECK(broken["link_broken"] == true);
+    CHECK(broken["discord_id"] == "42");
+    CHECK(broken["avatar"] == hash);
+}
+
 TEST_CASE("api: poll states map to JSON and status codes") {
     Fixture f;
     auto start = [&] {

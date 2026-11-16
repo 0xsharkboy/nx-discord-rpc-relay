@@ -120,6 +120,30 @@ TEST_CASE("links: granted yields a key, a user row and sealed tokens") {
     CHECK(f.relinked.empty());
 }
 
+TEST_CASE("links: linking stores the avatar and the poll returns discord_id and avatar") {
+    Fixture f;
+    const std::string hash = "0123456789abcdef0123456789abcdef";
+    auto id = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted("42", "alice", "access-1", "refresh-1", 604800, hash));
+    auto p = f.links->poll(id);
+    CHECK(p.state == LinkPoll::Linked);
+    CHECK(p.discord_id == "42");
+    CHECK(p.avatar == std::optional<std::string>(hash));
+    auto u = f.db->user_by_key_hash(sha256_hex(p.api_key));
+    REQUIRE(u);
+    CHECK(u->avatar == std::optional<std::string>(hash));
+    // A repeated poll within the keep window carries them too.
+    auto again = f.links->poll(id);
+    CHECK(again.discord_id == "42");
+    CHECK(again.avatar == std::optional<std::string>(hash));
+
+    auto id2 = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted("43", "bob"));
+    auto p2 = f.links->poll(id2);
+    CHECK(p2.discord_id == "43");
+    CHECK_FALSE(p2.avatar);
+}
+
 TEST_CASE("links: a repeated poll within 60 s returns the same key") {
     Fixture f;
     auto id = f.started();

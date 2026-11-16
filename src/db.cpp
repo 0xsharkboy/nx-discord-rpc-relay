@@ -9,7 +9,7 @@ namespace relay {
 
 namespace {
 
-constexpr int kSchemaVersion = 2;
+constexpr int kSchemaVersion = 3;
 
 [[noreturn]] void fail(sqlite3* db, const char* what) {
     throw std::runtime_error(std::string("sqlite: ") + what + ": " +
@@ -47,6 +47,13 @@ public:
             check(sqlite3_bind_blob(s_, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT));
         return *this;
     }
+    Stmt& opt_text(int i, const std::optional<std::string>& v) {
+        if (v)
+            text(i, *v);
+        else
+            check(sqlite3_bind_null(s_, i));
+        return *this;
+    }
     Stmt& i64(int i, int64_t v) {
         check(sqlite3_bind_int64(s_, i, v));
         return *this;
@@ -71,6 +78,10 @@ public:
         return p ? std::vector<uint8_t>(p, p + sqlite3_column_bytes(s_, i))
                  : std::vector<uint8_t>();
     }
+    std::optional<std::string> col_opt_text(int i) const {
+        if (sqlite3_column_type(s_, i) == SQLITE_NULL) return std::nullopt;
+        return col_text(i);
+    }
     int64_t col_i64(int i) const { return sqlite3_column_int64(s_, i); }
 
 private:
@@ -83,7 +94,7 @@ private:
 
 constexpr const char* kUserCols =
     "discord_id, username, key_hash, access_sealed, refresh_sealed, access_expires_at, "
-    "link_broken, last_seen_at";
+    "link_broken, last_seen_at, avatar";
 
 User read_user(const Stmt& s) {
     User u;
@@ -95,6 +106,7 @@ User read_user(const Stmt& s) {
     u.access_expires_at = s.col_i64(5);
     u.link_broken = s.col_i64(6) != 0;
     u.last_seen_at = s.col_i64(7);
+    u.avatar = s.col_opt_text(8);
     return u;
 }
 
@@ -142,6 +154,7 @@ void migrate(sqlite3* db) {
                  "CREATE INDEX IF NOT EXISTS users_last_seen ON users(last_seen_at);"
                  "PRAGMA user_version = 2");
         }
+        if (version < 3) exec(db, "ALTER TABLE users ADD COLUMN avatar TEXT; PRAGMA user_version = 3");
         exec(db, "COMMIT");
     } catch (...) {
         sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
@@ -180,7 +193,7 @@ void Db::upsert_user(const User& u) {
         Stmt(db_,
              "INSERT OR REPLACE INTO users "
              "(discord_id, username, key_hash, access_sealed, refresh_sealed, "
-             "access_expires_at, link_broken, last_seen_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")
+             "access_expires_at, link_broken, last_seen_at, avatar) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
             .text(1, u.discord_id)
             .text(2, u.username)
             .text(3, u.key_hash)
@@ -189,6 +202,7 @@ void Db::upsert_user(const User& u) {
             .i64(6, u.access_expires_at)
             .i64(7, u.link_broken ? 1 : 0)
             .i64(8, u.last_seen_at)
+            .opt_text(9, u.avatar)
             .run();
         exec(db_, "COMMIT");
     } catch (...) {
@@ -291,6 +305,18 @@ bool Db::update_tokens(std::string_view discord_id, std::string_view key_hash, s
         .blob(3, refresh)
         .i64(4, expires_at)
         .text(5, key_hash)
+        .run();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool Db::update_identity(std::string_view discord_id, std::string_view key_hash, std::string_view username,
+                         const std::optional<std::string>& avatar) {
+    std::lock_guard lock(mu_);
+    Stmt(db_, "UPDATE users SET username = ?3, avatar = ?4 WHERE discord_id = ?1 AND key_hash = ?2")
+        .text(1, discord_id)
+        .text(2, key_hash)
+        .text(3, username)
+        .opt_text(4, avatar)
         .run();
     return sqlite3_changes(db_) > 0;
 }

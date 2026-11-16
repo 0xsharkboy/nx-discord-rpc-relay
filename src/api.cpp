@@ -203,7 +203,11 @@ void handle_link_poll(Deps& d, const Request& req, Response& res) {
     case LinkPoll::Denied: return send_json(res, 200, json{{"state", "denied"}});
     case LinkPoll::Linked:
         return send_json(res, 200,
-                         json{{"state", "linked"}, {"api_key", poll.api_key}, {"username", poll.username}});
+                         json{{"state", "linked"},
+                              {"api_key", poll.api_key},
+                              {"username", poll.username},
+                              {"discord_id", poll.discord_id},
+                              {"avatar", poll.avatar ? json(*poll.avatar) : json(nullptr)}});
     case LinkPoll::Unknown: return send_error(res, 404, "unknown_link", "Unknown or expired link id");
     case LinkPoll::Error: break;
     }
@@ -217,7 +221,11 @@ void handle_me(Deps& d, const Request& req, Response& res) {
     if (auto cur = d.presence.current(user->discord_id))
         presence = json{{"name", cur->name}, {"details", cur->details}};
     send_json(res, 200,
-              json{{"username", user->username}, {"link_broken", user->link_broken}, {"presence", presence}});
+              json{{"username", user->username},
+                   {"discord_id", user->discord_id},
+                   {"avatar", user->avatar ? json(*user->avatar) : json(nullptr)},
+                   {"link_broken", user->link_broken},
+                   {"presence", presence}});
 }
 
 void handle_unlink(Deps& d, const Request& req, Response& res) {

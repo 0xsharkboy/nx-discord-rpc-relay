@@ -37,8 +37,10 @@ public:
 
     static PollResult granted(const std::string& discord_id = "42", const std::string& username = "alice",
                               const std::string& access = "access-1",
-                              const std::string& refresh = "refresh-1", int64_t expires_in = 604800) {
-        return {PollState::Granted, Tokens{access, refresh, expires_in, discord_id, username}};
+                              const std::string& refresh = "refresh-1", int64_t expires_in = 604800,
+                              std::optional<std::string> avatar = std::nullopt) {
+        return {PollState::Granted,
+                Tokens{access, refresh, expires_in, discord_id, username, std::move(avatar)}};
     }
     static PollResult state(PollState s) { return {s, std::nullopt}; }
 

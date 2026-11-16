@@ -29,7 +29,8 @@ struct LinkStart {
 struct LinkPoll {
     // Unknown: never issued or already purged.
     enum State { Pending, Expired, Denied, Linked, Error, Unknown } state = Pending;
-    std::string api_key, username;
+    std::string api_key, username, discord_id;
+    std::optional<std::string> avatar;
 };
 
 class Links {
@@ -66,7 +67,8 @@ private:
         int64_t linked_at_ms = 0;
         bool polling = false;
         LinkPoll::State state = LinkPoll::Pending;
-        std::string api_key, username;
+        std::string api_key, username, discord_id;
+        std::optional<std::string> avatar;
     };
 
     void purge_locked(int64_t now);
