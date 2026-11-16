@@ -6,15 +6,16 @@ Rich Presence.
 
 ## Conventions
 
-- Base URL: the relay's public URL, for example `https://rpc.0xsharkboy.dev`. Every path below is
+- Base URL: the relay's public URL, for example `https://nx-discord-rpc.0xsharkboy.dev`. Every path below is
   relative to it.
 - Request and response bodies are JSON (`Content-Type: application/json`), except icon uploads
   (raw JPEG bytes), icon downloads (`image/jpeg`) and `GET /healthz` (`text/plain`).
 - Every request with a body must send `Content-Length`. Chunked uploads
   (`Transfer-Encoding`) are refused with `411 length_required`. A request without `Content-Length`
   is treated as having an empty body.
-- The relay serves one request per connection: every response carries `Connection: close` and the
-  relay closes the socket after it. Open a new connection for each request.
+- The relay may close the connection after any response (it sends `Connection: close` on the hop
+  it controls), and keep-alive through the public endpoint is not guaranteed. Clients must handle a
+  closed connection and should simply open one connection per request, never relying on keep-alive.
 - Any request body over 262144 bytes is discarded unprocessed and refused with `413 too_large`,
   before authentication or any other check.
 - Lengths are counted in bytes of UTF-8, not characters.
@@ -268,7 +269,7 @@ Link:
 
 ```
 POST /v1/link HTTP/1.1
-Host: rpc.0xsharkboy.dev
+Host: nx-discord-rpc.0xsharkboy.dev
 Content-Length: 0
 
 HTTP/1.1 200 OK
@@ -281,7 +282,7 @@ Heartbeat:
 
 ```
 PUT /v1/presence HTTP/1.1
-Host: rpc.0xsharkboy.dev
+Host: nx-discord-rpc.0xsharkboy.dev
 Authorization: Bearer Zk3...
 Content-Type: application/json
 Content-Length: 98
