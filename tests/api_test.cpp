@@ -720,3 +720,13 @@ TEST_CASE("api: a PUT /v1/presence refused for a broken link is not activity") {
     check_error(f.put_presence(key, R"({"name":"Zelda"})"), 409, "link_broken");
     CHECK(f.db->user_by_discord_id("42")->last_seen_at == linked_at);
 }
+
+TEST_CASE("api: a PUT /v1/presence refused as invalid or too large is not activity") {
+    Fixture f;
+    auto key = f.link();
+    const int64_t linked_at = f.db->user_by_discord_id("42")->last_seen_at;
+    f.now += 2 * kLastSeenResolutionS * 1000;
+    check_error(f.put_presence(key, "not json"), 400, "invalid_body");
+    check_error(f.put_presence(key, std::string(5000, 'x')), 413, "too_large");
+    CHECK(f.db->user_by_discord_id("42")->last_seen_at == linked_at);
+}

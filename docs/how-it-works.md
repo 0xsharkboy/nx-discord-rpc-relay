@@ -93,9 +93,10 @@ console then gets `409 link_broken` on presence updates and should offer to link
 
 The revocation is best effort: the relay does not check Discord's answer and does not retry, and a
 revocation not yet sent when the relay shuts down is dropped (the log then says how many). It is
-also skipped if the account links again before it is sent, since it would cut off the new link.
-You can always remove the application's access yourself in Discord, under User Settings >
-Authorized Apps.
+also skipped if the account links again before it is sent, since it would cut off the new link. A
+revocation already on its way to Discord cannot be called back, so a link made within a few seconds
+of an unlink may be cut off and need to be redone. You can always remove the application's access
+yourself in Discord, under User Settings > Authorized Apps.
 
 Linking the same Discord account again (for example from another console) replaces the stored
 tokens and the API key: the previous key stops working at once. The relay does not revoke the
@@ -107,15 +108,15 @@ keeps no copy of them.
 
 ## Inactive accounts
 
-An account with no presence update (`PUT /v1/presence`) for **90 days** is deleted, whether its
-link works or is broken. Linking counts as activity, and updates refused with `409 link_broken` do
-not. The deletion is the same as an unlink: the `users` row and all of the account's icon votes
-are deleted, and both Discord tokens are revoked a few seconds later, best effort. The console then
-gets `401 unauthorized` and has to link again.
+An account with no accepted presence update (`PUT /v1/presence`) for **90 days** is deleted,
+whether its link works or is broken. Linking counts as activity; updates refused with an error (such
+as `409 link_broken` or `400 invalid_body`) do not. The deletion is the same as an unlink: the
+`users` row and all of the account's icon votes are deleted, and both Discord tokens are revoked a
+few seconds later, best effort. The console then gets `401 unauthorized` and has to link again.
 
-To limit writes, `last_seen_at` is updated at most once an hour per account. The check runs once a
-day, so an account is deleted about 90 days after its last update, at most a day later. Accounts
-that existed before this rule count as seen at the upgrade.
+To limit writes, `last_seen_at` is updated at most once an hour per account, and the check runs
+once a day, so an account is deleted between 90 days (less up to an hour) and 91 days after its
+last update. Accounts that existed before this rule count as seen at the upgrade.
 
 ## Presence
 

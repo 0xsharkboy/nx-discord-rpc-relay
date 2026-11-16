@@ -10,4 +10,5 @@ Additional permission under GNU AGPL version 3 section 7
 If you modify this program, or any covered work, by linking or combining it with the Discord
 Social SDK (or a modified version of that library), containing parts covered by the terms of the
 Discord Social SDK license, the licensors of this program grant you additional permission to
-convey the resulting work.
+convey the resulting work. Corresponding Source for a non-source form of such a combination need
+not include the source code of the Discord Social SDK, but shall include that of the covered work.

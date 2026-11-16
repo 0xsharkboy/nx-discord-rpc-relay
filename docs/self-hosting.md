@@ -128,6 +128,12 @@ the published icons (`icons/`) and the SDK's home directory (`home/`). Back up t
 ideally with the relay stopped, **together with `TOKEN_ENC_KEY`**: the stored Discord tokens cannot
 be decrypted without it. Losing the key means every user has to link again.
 
+### Before upgrading
+
+Stop the relay and back up `./data` (at least `relay.db` with its `-wal` and `-shm` files) before
+running a new image. A new relay migrates the database schema forward on start, and an older
+image refuses to start on a database written by a newer one, so the backup is the only way back.
+
 ## 8. Point your consoles at it
 
 For each console, take the SD card out, and on a PC set `relay_url` in

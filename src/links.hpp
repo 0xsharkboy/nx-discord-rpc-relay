@@ -4,8 +4,8 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
-#include <deque>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>

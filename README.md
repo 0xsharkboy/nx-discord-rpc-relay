@@ -35,6 +35,10 @@ Everything else comes from the Nix flake:
 `deploy/` holds a Compose file and an example environment; the Docker image is built from the
 `Dockerfile` at the root. The image contains the SDK, so keep it out of public registries.
 
+Before upgrading a deployment, back up `relay.db`: the relay migrates its schema forward on start,
+and an older image refuses a newer database (see
+[self-hosting](docs/self-hosting.md#before-upgrading)).
+
 ## License
 
 [GNU Affero General Public License v3.0 or later](LICENSE). If you run a modified relay as a
@@ -43,7 +47,9 @@ service, you must offer its source code to its users.
 Additional permission under GNU AGPL version 3 section 7: If you modify this program, or any
 covered work, by linking or combining it with the Discord Social SDK (or a modified version of that
 library), containing parts covered by the terms of the Discord Social SDK license, the licensors of
-this program grant you additional permission to convey the resulting work.
+this program grant you additional permission to convey the resulting work. Corresponding Source for
+a non-source form of such a combination need not include the source code of the Discord Social SDK,
+but shall include that of the covered work.
 
 The same text is in [NOTICE](NOTICE). The SPDX headers stay `AGPL-3.0-or-later`, since no standard
 SPDX identifier covers this exception.

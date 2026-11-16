@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <cctype>
 #include <chrono>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -231,14 +232,20 @@ void handle_put_presence(Deps& d, const Request& req, Response& res) {
     if (!user) return;
     if (user->link_broken)
         return send_error(res, 409, "link_broken", "The Discord link is broken, link the account again");
-    // Throttled here from the row already loaded, so most PUTs do not even reach the database.
-    if (const int64_t now = d.unix_s(); now - user->last_seen_at >= kLastSeenResolutionS)
-        d.db.touch_user(user->discord_id, user->key_hash, now);
     if (req.body.size() > kMaxPresenceBodyBytes)
         return send_error(res, 413, "too_large", "Body must be at most 4096 bytes");
     std::string why;
     auto update = parse_presence(req.body, why);
     if (!update) return send_error(res, 400, "invalid_body", why);
+    // Only an accepted update is activity. Throttled from the row already loaded, so most PUTs do not
+    // reach the database, and best effort: a failed write must not fail the update.
+    if (const int64_t now = d.unix_s(); now - user->last_seen_at >= kLastSeenResolutionS) {
+        try {
+            d.db.touch_user(user->discord_id, user->key_hash, now);
+        } catch (const std::exception& e) {
+            std::cerr << "relay: recording activity failed: " << e.what() << '\n';
+        }
+    }
     d.presence.put(user->discord_id, *update);
     res.status = 204;
 }
