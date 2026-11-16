@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -361,4 +362,78 @@ TEST_CASE("links: stopping drops queued revocations and waits only for the one i
     CHECK(f.oauth.revoked == std::vector<std::string>{"access-1"});
     f.links->flush_revocations();
     CHECK(f.oauth.revoked == std::vector<std::string>{"access-1"});
+}
+
+TEST_CASE("links: linking marks the account as seen at link time") {
+    Fixture f;
+    auto id = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted());
+    f.links->poll(id);
+    CHECK(f.db->user_by_discord_id("42")->last_seen_at == f.now / 1000);
+}
+
+TEST_CASE("links: relinking does not revoke the replaced tokens") {
+    // Discord revokes every token of the application for a user when any one is revoked, so
+    // revoking the replaced pair would also kill the new link.
+    Fixture f;
+    auto id1 = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted());
+    f.links->poll(id1);
+    auto id2 = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted("42", "alice", "access-2", "refresh-2"));
+    REQUIRE(f.links->poll(id2).state == LinkPoll::Linked);
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked.empty());
+}
+
+namespace {
+std::string link_as(Fixture& f, const std::string& discord_id) {
+    auto id = f.started();
+    f.oauth.poll_results.push_back(
+        FakeOAuth::granted(discord_id, "u" + discord_id, "access-" + discord_id, "refresh-" + discord_id));
+    auto p = f.links->poll(id);
+    REQUIRE(p.state == LinkPoll::Linked);
+    return sha256_hex(p.api_key);
+}
+}  // namespace
+
+TEST_CASE("links: the inactivity sweep removes accounts unseen for 90 days and queues their revocation") {
+    Fixture f;
+    const int64_t day_ms = 86'400'000;
+    auto stale_hash = link_as(f, "1");
+    f.db->add_vote("T", "S", "1", f.now / 1000);
+    f.now += 2 * day_ms;
+    auto fresh_hash = link_as(f, "2");
+    auto broken_hash = link_as(f, "3");
+    f.db->break_link("3", broken_hash);
+    // "1" was last seen 91 days ago, "2" and "3" 89 days ago.
+    f.now += 89 * day_ms;
+    CHECK(kInactiveAccountLifetimeS == 90 * 86400);
+    auto removed = f.links->expire_inactive();
+    CHECK(removed == std::vector<std::string>{"1"});
+    CHECK_FALSE(f.db->user_by_key_hash(stale_hash));
+    CHECK(f.db->user_by_key_hash(fresh_hash));
+    CHECK(f.db->user_by_key_hash(broken_hash));
+    CHECK(f.db->add_vote("T", "S", "9", f.now / 1000) == 1);
+    CHECK(f.oauth.revoked.empty());
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked == std::vector<std::string>{"access-1", "refresh-1"});
+
+    // A broken link follows the same rule.
+    f.now += 2 * day_ms;
+    removed = f.links->expire_inactive();
+    std::sort(removed.begin(), removed.end());
+    CHECK(removed == std::vector<std::string>{"2", "3"});
+    CHECK_FALSE(f.db->user_by_key_hash(broken_hash));
+}
+
+TEST_CASE("links: the inactivity sweep keeps an account seen again after the snapshot") {
+    Fixture f;
+    const int64_t day_ms = 86'400'000;
+    auto hash = link_as(f, "1");
+    f.now += 91 * day_ms;
+    // Seen right now: the sweep must not delete it.
+    REQUIRE(f.db->touch_user("1", hash, f.now / 1000));
+    CHECK(f.links->expire_inactive().empty());
+    CHECK(f.db->user_by_key_hash(hash));
 }

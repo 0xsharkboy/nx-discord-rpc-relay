@@ -9,7 +9,7 @@ namespace relay {
 
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 
 [[noreturn]] void fail(sqlite3* db, const char* what) {
     throw std::runtime_error(std::string("sqlite: ") + what + ": " +
@@ -83,7 +83,7 @@ private:
 
 constexpr const char* kUserCols =
     "discord_id, username, key_hash, access_sealed, refresh_sealed, access_expires_at, "
-    "link_broken";
+    "link_broken, last_seen_at";
 
 User read_user(const Stmt& s) {
     User u;
@@ -94,6 +94,7 @@ User read_user(const Stmt& s) {
     u.refresh_sealed = s.col_blob(4);
     u.access_expires_at = s.col_i64(5);
     u.link_broken = s.col_i64(6) != 0;
+    u.last_seen_at = s.col_i64(7);
     return u;
 }
 
@@ -108,29 +109,39 @@ void migrate(sqlite3* db) {
 
     exec(db, "BEGIN IMMEDIATE");
     try {
-        exec(db,
-             "CREATE TABLE IF NOT EXISTS users ("
-             " discord_id TEXT PRIMARY KEY,"
-             " username TEXT NOT NULL,"
-             " key_hash TEXT NOT NULL UNIQUE,"
-             " access_sealed BLOB NOT NULL,"
-             " refresh_sealed BLOB NOT NULL,"
-             " access_expires_at INTEGER NOT NULL,"
-             " link_broken INTEGER NOT NULL DEFAULT 0);"
-             "CREATE INDEX IF NOT EXISTS users_expires ON users(access_expires_at);"
-             "CREATE TABLE IF NOT EXISTS published_icons ("
-             " title_id TEXT PRIMARY KEY,"
-             " sha256 TEXT NOT NULL,"
-             " published_at INTEGER NOT NULL);"
-             "CREATE TABLE IF NOT EXISTS votes ("
-             " title_id TEXT NOT NULL,"
-             " sha256 TEXT NOT NULL,"
-             " discord_id TEXT NOT NULL,"
-             " created_at INTEGER NOT NULL,"
-             " PRIMARY KEY (title_id, sha256, discord_id));"
-             "CREATE INDEX IF NOT EXISTS votes_created ON votes(created_at);"
-             "CREATE TABLE IF NOT EXISTS blocked_hashes (sha256 TEXT PRIMARY KEY);"
-             "PRAGMA user_version = 1");
+        if (version < 1) {
+            exec(db,
+                 "CREATE TABLE IF NOT EXISTS users ("
+                 " discord_id TEXT PRIMARY KEY,"
+                 " username TEXT NOT NULL,"
+                 " key_hash TEXT NOT NULL UNIQUE,"
+                 " access_sealed BLOB NOT NULL,"
+                 " refresh_sealed BLOB NOT NULL,"
+                 " access_expires_at INTEGER NOT NULL,"
+                 " link_broken INTEGER NOT NULL DEFAULT 0);"
+                 "CREATE INDEX IF NOT EXISTS users_expires ON users(access_expires_at);"
+                 "CREATE TABLE IF NOT EXISTS published_icons ("
+                 " title_id TEXT PRIMARY KEY,"
+                 " sha256 TEXT NOT NULL,"
+                 " published_at INTEGER NOT NULL);"
+                 "CREATE TABLE IF NOT EXISTS votes ("
+                 " title_id TEXT NOT NULL,"
+                 " sha256 TEXT NOT NULL,"
+                 " discord_id TEXT NOT NULL,"
+                 " created_at INTEGER NOT NULL,"
+                 " PRIMARY KEY (title_id, sha256, discord_id));"
+                 "CREATE INDEX IF NOT EXISTS votes_created ON votes(created_at);"
+                 "CREATE TABLE IF NOT EXISTS blocked_hashes (sha256 TEXT PRIMARY KEY);"
+                 "PRAGMA user_version = 1");
+        }
+        if (version < 2) {
+            // Existing users count as seen at the upgrade, so none is purged by it.
+            exec(db,
+                 "ALTER TABLE users ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0;"
+                 "UPDATE users SET last_seen_at = CAST(strftime('%s', 'now') AS INTEGER);"
+                 "CREATE INDEX IF NOT EXISTS users_last_seen ON users(last_seen_at);"
+                 "PRAGMA user_version = 2");
+        }
         exec(db, "COMMIT");
     } catch (...) {
         sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
@@ -169,7 +180,7 @@ void Db::upsert_user(const User& u) {
         Stmt(db_,
              "INSERT OR REPLACE INTO users "
              "(discord_id, username, key_hash, access_sealed, refresh_sealed, "
-             "access_expires_at, link_broken) VALUES (?1,?2,?3,?4,?5,?6,?7)")
+             "access_expires_at, link_broken, last_seen_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")
             .text(1, u.discord_id)
             .text(2, u.username)
             .text(3, u.key_hash)
@@ -177,6 +188,7 @@ void Db::upsert_user(const User& u) {
             .blob(5, u.refresh_sealed)
             .i64(6, u.access_expires_at)
             .i64(7, u.link_broken ? 1 : 0)
+            .i64(8, u.last_seen_at)
             .run();
         exec(db_, "COMMIT");
     } catch (...) {
@@ -203,13 +215,29 @@ std::optional<User> Db::user_by_discord_id(std::string_view discord_id) {
 }
 
 bool Db::delete_user(std::string_view discord_id, std::string_view key_hash) {
+    return delete_user_where(discord_id, key_hash, std::nullopt);
+}
+
+bool Db::delete_inactive_user(std::string_view discord_id, std::string_view key_hash, int64_t cutoff) {
+    return delete_user_where(discord_id, key_hash, cutoff);
+}
+
+bool Db::delete_user_where(std::string_view discord_id, std::string_view key_hash,
+                           std::optional<int64_t> seen_before) {
     std::lock_guard lock(mu_);
     exec(db_, "BEGIN IMMEDIATE");
     try {
-        Stmt(db_, "DELETE FROM users WHERE discord_id = ?1 AND key_hash = ?2")
-            .text(1, discord_id)
-            .text(2, key_hash)
-            .run();
+        if (seen_before)
+            Stmt(db_, "DELETE FROM users WHERE discord_id = ?1 AND key_hash = ?2 AND last_seen_at < ?3")
+                .text(1, discord_id)
+                .text(2, key_hash)
+                .i64(3, *seen_before)
+                .run();
+        else
+            Stmt(db_, "DELETE FROM users WHERE discord_id = ?1 AND key_hash = ?2")
+                .text(1, discord_id)
+                .text(2, key_hash)
+                .run();
         const bool deleted = sqlite3_changes(db_) > 0;
         if (deleted) Stmt(db_, "DELETE FROM votes WHERE discord_id = ?1").text(1, discord_id).run();
         exec(db_, "COMMIT");
@@ -218,6 +246,30 @@ bool Db::delete_user(std::string_view discord_id, std::string_view key_hash) {
         sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
         throw;
     }
+}
+
+bool Db::touch_user(std::string_view discord_id, std::string_view key_hash, int64_t now) {
+    std::lock_guard lock(mu_);
+    Stmt(db_,
+         "UPDATE users SET last_seen_at = ?3 "
+         "WHERE discord_id = ?1 AND key_hash = ?2 AND last_seen_at <= ?3 - ?4")
+        .text(1, discord_id)
+        .text(2, key_hash)
+        .i64(3, now)
+        .i64(4, kLastSeenResolutionS)
+        .run();
+    return sqlite3_changes(db_) > 0;
+}
+
+std::vector<User> Db::users_inactive_before(int64_t unix_s) {
+    std::lock_guard lock(mu_);
+    Stmt s(db_, (std::string("SELECT ") + kUserCols +
+                 " FROM users WHERE last_seen_at < ?1 ORDER BY last_seen_at")
+                    .c_str());
+    s.i64(1, unix_s);
+    std::vector<User> out;
+    while (s.step()) out.push_back(read_user(s));
+    return out;
 }
 
 void Db::set_link_broken(std::string_view discord_id, bool broken) {

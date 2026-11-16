@@ -136,6 +136,9 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
     u.refresh_sealed = seal(key_, t.refresh_token);
     u.access_expires_at = now / 1000 + t.expires_in;
     u.link_broken = false;
+    u.last_seen_at = now / 1000;
+    // The replaced tokens are not revoked: Discord revokes every token of the application for a user
+    // when any one is revoked, which would kill this new link too. They die with the next revocation.
     db_.upsert_user(u);
 
     {
@@ -163,10 +166,26 @@ bool Links::unlink(const std::string& discord_id, const std::string& key_hash) {
     auto u = db_.user_by_key_hash(key_hash);
     if (!u || u->discord_id != discord_id) return false;
     if (!db_.delete_user(discord_id, key_hash)) return false;
-    std::lock_guard lk(revoke_mu_);
-    for (const auto* sealed : {&u->access_sealed, &u->refresh_sealed})
-        if (auto token = open(key_, *sealed)) pending_revocations_.push_back(std::move(*token));
+    queue_revocations(*u);
     return true;
+}
+
+std::vector<std::string> Links::expire_inactive() {
+    const int64_t cutoff = now_ms_() / 1000 - kInactiveAccountLifetimeS;
+    std::vector<std::string> removed;
+    for (const User& u : db_.users_inactive_before(cutoff)) {
+        // Guarded on the key and the cutoff: a relink or a PUT since the snapshot keeps the account.
+        if (!db_.delete_inactive_user(u.discord_id, u.key_hash, cutoff)) continue;
+        queue_revocations(u);
+        removed.push_back(u.discord_id);
+    }
+    return removed;
+}
+
+void Links::queue_revocations(const User& u) {
+    std::lock_guard lk(revoke_mu_);
+    for (const auto* sealed : {&u.access_sealed, &u.refresh_sealed})
+        if (auto token = open(key_, *sealed)) pending_revocations_.push_back(std::move(*token));
 }
 
 void Links::flush_revocations() {

@@ -42,7 +42,8 @@ constexpr int kPollPerHour = 720;
 constexpr int kIconPerHour = 30;
 constexpr auto kTickEvery = 10ms;
 constexpr auto kRefreshEvery = 10min;
-constexpr auto kExpireVotesEvery = 24h;
+// Daily maintenance: vote expiry and the 90 day inactive account sweep.
+constexpr auto kMaintenanceEvery = 24h;
 // How long an unlinked account's tokens may wait before their revocation is sent.
 constexpr auto kRevokeEvery = 2s;
 constexpr int64_t kVoteLifetimeS = 30 * 86400;
@@ -91,7 +92,7 @@ void pump(IPresenceBackend& backend, std::chrono::milliseconds total) {
     }
 }
 
-void background_jobs(Refresher& refresher, Db& db, StopFlag& stop) {
+void background_jobs(Refresher& refresher, Db& db, Links& links, Presence& presence, StopFlag& stop) {
     auto next_refresh = std::chrono::steady_clock::now();
     auto next_expiry = next_refresh;
     while (!stop.is_set()) {
@@ -106,7 +107,15 @@ void background_jobs(Refresher& refresher, Db& db, StopFlag& stop) {
             } catch (const std::exception& e) {
                 std::cerr << "relay: vote expiry failed: " << e.what() << '\n';
             }
-            next_expiry = now + kExpireVotesEvery;
+            try {
+                const auto removed = links.expire_inactive();
+                for (const auto& id : removed) presence.drop(id);
+                if (!removed.empty())
+                    std::cout << "relay: removed " << removed.size() << " inactive account(s)" << std::endl;
+            } catch (const std::exception& e) {
+                std::cerr << "relay: inactive account sweep failed: " << e.what() << '\n';
+            }
+            next_expiry = now + kMaintenanceEvery;
         }
         stop.wait_for(std::min(next_refresh, next_expiry) - std::chrono::steady_clock::now());
     }
@@ -181,7 +190,7 @@ int main() {
     RateLimiter link_limiter(kLinkPerHour, kHourMs, unix_ms);
     RateLimiter poll_limiter(kPollPerHour, kHourMs, unix_ms);
     RateLimiter icon_limiter(kIconPerHour, kHourMs, unix_ms);
-    Deps deps{cfg, *db, icons, links, presence, link_limiter, poll_limiter, icon_limiter, nullptr, nullptr};
+    Deps deps{cfg, *db, icons, links, presence, link_limiter, poll_limiter, icon_limiter, nullptr, nullptr, unix_s};
 
     httplib::Server svr;
     register_routes(svr, deps);
@@ -227,7 +236,7 @@ int main() {
     });
 
     std::thread jobs([&] {
-        background_jobs(refresher, *db, stop);
+        background_jobs(refresher, *db, links, presence, stop);
         jobs_done = true;
     });
 

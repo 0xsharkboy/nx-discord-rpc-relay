@@ -130,7 +130,8 @@ struct Fixture {
             [this](const std::string& line) {
                 std::lock_guard lk(log_mu);
                 log_lines.push_back(line);
-            }});
+            },
+            [this] { return now.load() / 1000; }});
         register_routes(svr, *deps);
         port = svr.bind_to_any_port("127.0.0.1");
         REQUIRE(port > 0);
@@ -682,4 +683,40 @@ TEST_CASE("api: chunk bytes after a 411 are never parsed as a second request") {
 
     CHECK(count_of(first.data + rest.data, "HTTP/1.1 ") == 1);
     CHECK(rest.closed);
+}
+
+TEST_CASE("api: PUT /v1/presence records activity at most once per hour") {
+    Fixture f;
+    auto key = f.link();
+    const int64_t linked_at = f.db->user_by_discord_id("42")->last_seen_at;
+    CHECK(linked_at == f.now.load() / 1000);
+
+    f.now += (kLastSeenResolutionS - 1) * 1000;
+    auto r = f.put_presence(key, R"({"name":"Zelda"})");
+    REQUIRE(r);
+    CHECK(r->status == 204);
+    CHECK(f.db->user_by_discord_id("42")->last_seen_at == linked_at);
+
+    f.now += 1000;
+    r = f.put_presence(key, R"({"name":"Zelda"})");
+    REQUIRE(r);
+    CHECK(r->status == 204);
+    const int64_t seen = f.now.load() / 1000;
+    CHECK(f.db->user_by_discord_id("42")->last_seen_at == seen);
+
+    // GET /v1/me and DELETE /v1/presence are not activity.
+    f.now += 2 * kLastSeenResolutionS * 1000;
+    f.cli->Get("/v1/me", bearer(key));
+    f.cli->Delete("/v1/presence", bearer(key));
+    CHECK(f.db->user_by_discord_id("42")->last_seen_at == seen);
+}
+
+TEST_CASE("api: a PUT /v1/presence refused for a broken link is not activity") {
+    Fixture f;
+    auto key = f.link();
+    const int64_t linked_at = f.db->user_by_discord_id("42")->last_seen_at;
+    f.db->set_link_broken("42", true);
+    f.now += 2 * kLastSeenResolutionS * 1000;
+    check_error(f.put_presence(key, R"({"name":"Zelda"})"), 409, "link_broken");
+    CHECK(f.db->user_by_discord_id("42")->last_seen_at == linked_at);
 }

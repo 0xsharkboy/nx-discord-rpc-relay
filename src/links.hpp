@@ -17,6 +17,9 @@
 
 namespace relay {
 
+// An account with no accepted PUT /v1/presence for this long is deleted by expire_inactive().
+constexpr int64_t kInactiveAccountLifetimeS = 90 * 86400;
+
 struct LinkStart {
     std::string link_id, user_code, verification_uri_complete;
     int expires_in = 0, interval = 5;
@@ -39,6 +42,9 @@ public:
     // request never waits on Discord.
     // Returns whether the account still held `key_hash` and was unlinked.
     bool unlink(const std::string& discord_id, const std::string& key_hash);
+    // Deletes every account, broken links included, not seen for kInactiveAccountLifetimeS, and
+    // queues its revocations like unlink. Returns the discord ids removed.
+    std::vector<std::string> expire_inactive();
     // Sends the queued revocations, best effort. Once stopped, drops whatever is left unsent.
     void flush_revocations();
     // Flushes every `every` until stop_revocations(). Runs on its own thread.
@@ -62,6 +68,7 @@ private:
 
     void purge_locked(int64_t now);
     LinkPoll finish_grant(const std::string& link_id, const Tokens& t, int64_t now);
+    void queue_revocations(const User&);
 
     IOAuth& oauth_;
     Db& db_;

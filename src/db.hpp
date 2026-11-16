@@ -19,7 +19,13 @@ struct User {
     std::vector<uint8_t> access_sealed, refresh_sealed;
     int64_t access_expires_at = 0;
     bool link_broken = false;
+    // Unix seconds of the last accepted PUT /v1/presence (or of the link), kept to within
+    // kLastSeenResolutionS.
+    int64_t last_seen_at = 0;
 };
+
+// last_seen_at is rewritten at most this often per user, to limit writes.
+constexpr int64_t kLastSeenResolutionS = 3600;
 
 struct IconRecord {
     std::string title_id, sha256;
@@ -39,6 +45,14 @@ public:
     // Deletes the row only while it still holds `key_hash`, together with the user's pending icon
     // votes. Returns whether a row was deleted.
     bool delete_user(std::string_view discord_id, std::string_view key_hash);
+    // Same as delete_user, but only while the row was also last seen before `cutoff`, so a user seen
+    // again since a sweep took its snapshot is kept.
+    bool delete_inactive_user(std::string_view discord_id, std::string_view key_hash, int64_t cutoff);
+    // Sets last_seen_at to `now` unless it was set less than kLastSeenResolutionS before. Guarded by
+    // `key_hash` like the updates below. Returns whether a row changed.
+    bool touch_user(std::string_view discord_id, std::string_view key_hash, int64_t now);
+    // Includes users whose link is broken. Oldest first.
+    std::vector<User> users_inactive_before(int64_t unix_s);
     void set_link_broken(std::string_view discord_id, bool);
     // The guarded updates below change the row only while it still holds `key_hash`, so work based
     // on a snapshot taken before a relink or an unlink cannot touch the new link. They return whether
@@ -60,6 +74,8 @@ public:
     void expire_votes(int64_t older_than);
 
 private:
+    bool delete_user_where(std::string_view discord_id, std::string_view key_hash,
+                           std::optional<int64_t> seen_before);
     Db() = default;
     sqlite3* db_ = nullptr;
     std::mutex mu_;

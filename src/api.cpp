@@ -231,6 +231,9 @@ void handle_put_presence(Deps& d, const Request& req, Response& res) {
     if (!user) return;
     if (user->link_broken)
         return send_error(res, 409, "link_broken", "The Discord link is broken, link the account again");
+    // Throttled here from the row already loaded, so most PUTs do not even reach the database.
+    if (const int64_t now = d.unix_s(); now - user->last_seen_at >= kLastSeenResolutionS)
+        d.db.touch_user(user->discord_id, user->key_hash, now);
     if (req.body.size() > kMaxPresenceBodyBytes)
         return send_error(res, 413, "too_large", "Body must be at most 4096 bytes");
     std::string why;
@@ -300,6 +303,12 @@ void register_routes(httplib::Server& svr, Deps& d) {
         d.monotonic_ms = [] {
             return std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        };
+    if (!d.unix_s)
+        d.unix_s = [] {
+            return std::chrono::duration_cast<std::chrono::seconds>(
+                       std::chrono::system_clock::now().time_since_epoch())
                 .count();
         };
     if (!d.log)

@@ -2,10 +2,13 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <ctime>
 #include <filesystem>
 #include <stdexcept>
 #include <unistd.h>
 #include <string>
+
+#include <sqlite3.h>
 
 #include "db.hpp"
 
@@ -274,4 +277,107 @@ TEST_CASE("db: empty blobs and strings bind as empty values, not NULL") {
     CHECK(two->access_expires_at == 7);
     CHECK_FALSE(db->user_by_key_hash(std::string_view{}));
     CHECK_FALSE(db->is_blocked(std::string_view{}));
+}
+
+TEST_CASE("db: last_seen_at is stored by upsert and replaced on relink") {
+    TempDb t;
+    auto db = t.open();
+    auto u = make_user("1", "old");
+    u.last_seen_at = 100;
+    db->upsert_user(u);
+    CHECK(db->user_by_key_hash("old")->last_seen_at == 100);
+    auto n = make_user("1", "new");
+    n.last_seen_at = 900;
+    db->upsert_user(n);
+    CHECK(db->user_by_key_hash("new")->last_seen_at == 900);
+}
+
+TEST_CASE("db: touch_user writes at most once per resolution window and only for the current key") {
+    TempDb t;
+    auto db = t.open();
+    auto u = make_user("1", "h1");
+    u.last_seen_at = 10'000;
+    db->upsert_user(u);
+    CHECK_FALSE(db->touch_user("1", "h1", 10'000 + kLastSeenResolutionS - 1));
+    CHECK(db->user_by_discord_id("1")->last_seen_at == 10'000);
+    CHECK(db->touch_user("1", "h1", 10'000 + kLastSeenResolutionS));
+    CHECK(db->user_by_discord_id("1")->last_seen_at == 10'000 + kLastSeenResolutionS);
+    CHECK_FALSE(db->touch_user("1", "stale", 10'000 + 5 * kLastSeenResolutionS));
+    CHECK(db->user_by_discord_id("1")->last_seen_at == 10'000 + kLastSeenResolutionS);
+}
+
+TEST_CASE("db: users_inactive_before is strict and includes broken links") {
+    TempDb t;
+    auto db = t.open();
+    auto a = make_user("1", "h1");
+    a.last_seen_at = 99;
+    auto b = make_user("2", "h2");
+    b.last_seen_at = 100;
+    auto c = make_user("3", "h3");
+    c.last_seen_at = 50;
+    c.link_broken = true;
+    db->upsert_user(a);
+    db->upsert_user(b);
+    db->upsert_user(c);
+    auto got = db->users_inactive_before(100);
+    REQUIRE(got.size() == 2);
+    CHECK(got[0].discord_id == "3");
+    CHECK(got[1].discord_id == "1");
+}
+
+TEST_CASE("db: delete_inactive_user needs the same key and a last_seen_at still before the cutoff") {
+    TempDb t;
+    auto db = t.open();
+    auto u = make_user("1", "h1");
+    u.last_seen_at = 50;
+    db->upsert_user(u);
+    CHECK(db->add_vote("T", "S", "1", 10) == 1);
+    CHECK_FALSE(db->delete_inactive_user("1", "stale", 100));
+    CHECK_FALSE(db->delete_inactive_user("1", "h1", 50));
+    CHECK(db->delete_inactive_user("1", "h1", 51));
+    CHECK_FALSE(db->user_by_discord_id("1"));
+    CHECK(db->add_vote("T", "S", "2", 11) == 1);
+}
+
+TEST_CASE("db: migrating a version 1 database keeps its users and marks them seen now") {
+    TempDb t;
+    {
+        sqlite3* raw = nullptr;
+        REQUIRE(sqlite3_open(t.path.string().c_str(), &raw) == SQLITE_OK);
+        REQUIRE(sqlite3_exec(raw,
+                             "CREATE TABLE users ("
+                             " discord_id TEXT PRIMARY KEY,"
+                             " username TEXT NOT NULL,"
+                             " key_hash TEXT NOT NULL UNIQUE,"
+                             " access_sealed BLOB NOT NULL,"
+                             " refresh_sealed BLOB NOT NULL,"
+                             " access_expires_at INTEGER NOT NULL,"
+                             " link_broken INTEGER NOT NULL DEFAULT 0);"
+                             "CREATE INDEX users_expires ON users(access_expires_at);"
+                             "CREATE TABLE published_icons (title_id TEXT PRIMARY KEY,"
+                             " sha256 TEXT NOT NULL, published_at INTEGER NOT NULL);"
+                             "CREATE TABLE votes (title_id TEXT NOT NULL, sha256 TEXT NOT NULL,"
+                             " discord_id TEXT NOT NULL, created_at INTEGER NOT NULL,"
+                             " PRIMARY KEY (title_id, sha256, discord_id));"
+                             "CREATE INDEX votes_created ON votes(created_at);"
+                             "CREATE TABLE blocked_hashes (sha256 TEXT PRIMARY KEY);"
+                             "INSERT INTO users VALUES ('1', 'old', 'h1', x'01', x'02', 1000, 1);"
+                             "PRAGMA user_version = 1;",
+                             nullptr, nullptr, nullptr) == SQLITE_OK);
+        sqlite3_close(raw);
+    }
+    const int64_t before = static_cast<int64_t>(std::time(nullptr));
+    auto db = t.open();
+    const int64_t after = static_cast<int64_t>(std::time(nullptr));
+    auto u = db->user_by_key_hash("h1");
+    REQUIRE(u);
+    CHECK(u->username == "old");
+    CHECK(u->link_broken);
+    CHECK(u->last_seen_at >= before);
+    CHECK(u->last_seen_at <= after);
+    CHECK(db->users_inactive_before(before).empty());
+    db.reset();
+    // Reopening a migrated database runs no migration again.
+    auto again = t.open();
+    CHECK(again->user_by_key_hash("h1")->last_seen_at == u->last_seen_at);
 }
