@@ -78,7 +78,7 @@ To use an SDK stored elsewhere, pass its directory to CMake:
 ## 4. Configure
 
 Copy `deploy/compose.yml` and `deploy/relay.env.example` to the server, the latter as `relay.env`,
-and fill it in. Keep `relay.env` readable by its owner only (`chmod 600 relay.env`).
+and fill it in, in the directory holding `compose.yml`. Keep `relay.env` readable by its owner only (`chmod 600 relay.env`).
 
 | Variable | Required | Meaning |
 |---|---|---|
@@ -99,8 +99,9 @@ In `compose.yml`, set `image:` to the tag you built, for example `nx-discord-rpc
 
 ## 5. Run
 
-1. Create the data directory, owned by uid 1000 (the image's user), **before** the first
-   `docker compose up`. Otherwise Docker creates it as root and the relay cannot write to it:
+1. In the directory holding `compose.yml`, create the data directory, owned by uid 1000 (the
+   image's user), **before** the first `docker compose up`. Otherwise Docker creates it as root and
+   the relay cannot write to it:
 
        mkdir -p data && sudo chown 1000:1000 data
 
@@ -118,7 +119,7 @@ own rate-limit key:
 - nginx: `proxy_set_header X-Forwarded-For $remote_addr;` (not `$proxy_add_x_forwarded_for`);
 - Caddy: `reverse_proxy 127.0.0.1:8080` already replaces the header sent by untrusted clients.
 
-Without a proxy, set `TRUST_PROXY=false`.
+Set TRUST_PROXY=false only when clients reach the relay directly (local testing); consoles require https, so production needs a TLS proxy.
 
 ## 7. Backups
 
