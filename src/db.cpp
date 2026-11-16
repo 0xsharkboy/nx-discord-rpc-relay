@@ -201,13 +201,18 @@ std::optional<User> Db::user_by_discord_id(std::string_view discord_id) {
     return read_user(s);
 }
 
-void Db::delete_user(std::string_view discord_id) {
+bool Db::delete_user(std::string_view discord_id, std::string_view key_hash) {
     std::lock_guard lock(mu_);
     exec(db_, "BEGIN IMMEDIATE");
     try {
-        Stmt(db_, "DELETE FROM users WHERE discord_id = ?1").text(1, discord_id).run();
-        Stmt(db_, "DELETE FROM votes WHERE discord_id = ?1").text(1, discord_id).run();
+        Stmt(db_, "DELETE FROM users WHERE discord_id = ?1 AND key_hash = ?2")
+            .text(1, discord_id)
+            .text(2, key_hash)
+            .run();
+        const bool deleted = sqlite3_changes(db_) > 0;
+        if (deleted) Stmt(db_, "DELETE FROM votes WHERE discord_id = ?1").text(1, discord_id).run();
         exec(db_, "COMMIT");
+        return deleted;
     } catch (...) {
         sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
         throw;

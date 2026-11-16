@@ -154,13 +154,14 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
     return {LinkPoll::Linked, std::move(api_key), t.username};
 }
 
-void Links::unlink(const std::string& discord_id) {
-    auto u = db_.user_by_discord_id(discord_id);
-    if (!u) return;
-    db_.delete_user(discord_id);
+bool Links::unlink(const std::string& discord_id, const std::string& key_hash) {
+    auto u = db_.user_by_key_hash(key_hash);
+    if (!u || u->discord_id != discord_id) return false;
+    if (!db_.delete_user(discord_id, key_hash)) return false;
     std::lock_guard lk(revoke_mu_);
     for (const auto* sealed : {&u->access_sealed, &u->refresh_sealed})
         if (auto token = open(key_, *sealed)) pending_revocations_.push_back(std::move(*token));
+    return true;
 }
 
 void Links::flush_revocations() {

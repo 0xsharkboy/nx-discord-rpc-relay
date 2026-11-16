@@ -221,8 +221,7 @@ void handle_me(Deps& d, const Request& req, Response& res) {
 void handle_unlink(Deps& d, const Request& req, Response& res) {
     auto user = require_user(d, req, res);
     if (!user) return;
-    d.links.unlink(user->discord_id);
-    d.presence.drop(user->discord_id);
+    if (d.links.unlink(user->discord_id, user->key_hash)) d.presence.drop(user->discord_id);
     res.status = 204;
 }
 

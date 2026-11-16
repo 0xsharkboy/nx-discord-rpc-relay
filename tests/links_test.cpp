@@ -213,7 +213,7 @@ TEST_CASE("links: unlink revokes both tokens and deletes the row") {
     auto id = f.started();
     f.oauth.poll_results.push_back(FakeOAuth::granted());
     auto p = f.links->poll(id);
-    f.links->unlink("42");
+    CHECK(f.links->unlink("42", sha256_hex(p.api_key)));
     // The key dies at once; the Discord calls wait for the background flush.
     CHECK(f.oauth.revoked.empty());
     CHECK_FALSE(f.db->user_by_discord_id("42"));
@@ -224,9 +224,20 @@ TEST_CASE("links: unlink revokes both tokens and deletes the row") {
     CHECK(f.oauth.revoked.size() == 2);
 }
 
+TEST_CASE("links: unlink with a stale key hash revokes nothing") {
+    Fixture f;
+    auto id = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted());
+    auto p = f.links->poll(id);
+    CHECK_FALSE(f.links->unlink("42", "stale"));
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked.empty());
+    CHECK(f.db->user_by_key_hash(sha256_hex(p.api_key)));
+}
+
 TEST_CASE("links: unlink skips tokens that fail to decrypt and ignores unknown users") {
     Fixture f;
-    f.links->unlink("nobody");
+    CHECK_FALSE(f.links->unlink("nobody", "h"));
     f.links->flush_revocations();
     CHECK(f.oauth.revoked.empty());
     User u;
@@ -236,7 +247,7 @@ TEST_CASE("links: unlink skips tokens that fail to decrypt and ignores unknown u
     u.access_sealed = {1, 2, 3};
     u.refresh_sealed = seal(f.key, "refresh-9");
     f.db->upsert_user(u);
-    f.links->unlink("9");
+    CHECK(f.links->unlink("9", "h"));
     f.links->flush_revocations();
     CHECK(f.oauth.revoked == std::vector<std::string>{"refresh-9"});
     CHECK_FALSE(f.db->user_by_discord_id("9"));
@@ -275,8 +286,8 @@ TEST_CASE("links: a failing revoke does not stop the others") {
     Fixture f;
     auto id = f.started();
     f.oauth.poll_results.push_back(FakeOAuth::granted());
-    f.links->poll(id);
-    f.links->unlink("42");
+    auto p = f.links->poll(id);
+    f.links->unlink("42", sha256_hex(p.api_key));
     f.oauth.throw_on_revoke_token = "access-1";
     CHECK_NOTHROW(f.links->flush_revocations());
     CHECK(f.oauth.revoked == std::vector<std::string>{"access-1", "refresh-1"});

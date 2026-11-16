@@ -34,7 +34,8 @@ public:
     LinkPoll poll(const std::string& link_id);
     // Deletes the user at once (the key dies with it) and queues the Discord revocations, so the
     // request never waits on Discord.
-    void unlink(const std::string& discord_id);
+    // Returns whether the account still held `key_hash` and was unlinked.
+    bool unlink(const std::string& discord_id, const std::string& key_hash);
     // Sends the queued revocations, best effort. Called from the background jobs thread.
     void flush_revocations();
 
