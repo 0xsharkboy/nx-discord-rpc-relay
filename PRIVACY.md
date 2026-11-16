@@ -26,6 +26,9 @@ Discord token.
 Stored in the relay's database:
 
 - **Discord user id and username**, to identify your linked account.
+- **Your Discord avatar id**, the short code Discord uses to name your profile picture (not the
+  picture itself), so your console can show your profile picture. The relay reads it, with your
+  username, when you link and again each time it refreshes your tokens, about once a week.
 - **Discord access and refresh tokens**, encrypted, to set your presence and keep the link working.
 - **A hash (SHA-256) of your console's API key**, to recognize your console. The key itself is not
   stored.
@@ -55,7 +58,7 @@ The Discord Social SDK also keeps its own files on the server, managed by the SD
 
 ## How long data is kept
 
-- **Account data** (id, username, tokens, key hash, last activity) is kept until you unlink. It is
+- **Account data** (id, username, avatar id, tokens, key hash, last activity) is kept until you unlink. It is
   deleted automatically after **90 days** without an accepted presence update.
 - **Icon votes** are deleted about **30 days** after they were cast, or at once when you unlink.
 - **Published icons** stay after the votes are gone. They do not identify you.
@@ -81,6 +84,8 @@ The Discord Social SDK also keeps its own files on the server, managed by the SD
 
 Your data is sent only to Discord, to set your presence and to manage your tokens. It is not sold,
 not used for analytics or advertising, and not shared with any other third party.
+
+Your console downloads your profile picture itself from Discord's public image server (`cdn.discordapp.com`), without any token; Discord then sees your console's IP address. The relay does not download, store or forward the picture.
 
 ## Security
 

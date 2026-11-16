@@ -25,6 +25,8 @@ The relay keeps one SQLite database, `relay.db` in the data directory, with thes
 - `users`, one row per linked Discord account:
   - `discord_id`: your Discord user id;
   - `username`: your Discord username;
+  - `avatar`: the id Discord gives your profile picture (not the picture itself), empty when you have
+    none;
   - `key_hash`: the SHA-256 of your API key. The key itself is never stored, so the relay cannot
     show it again;
   - `access_sealed` and `refresh_sealed`: your Discord access and refresh tokens, encrypted (see
@@ -76,6 +78,15 @@ the next 24 hours. When Discord rejects a refresh token, or when a stored token 
 the account is marked `link_broken`; when Discord is unreachable or answers with an unexpected error,
 the relay tries again on the next run. When Discord says the relay's own client credentials are
 invalid, the run stops without touching any account.
+
+After each successful refresh, the relay reads your Discord identity again with the new access token
+and updates your stored `username` and `avatar`, so a renamed account or a new profile picture shows up
+within about a week. This step is best effort: if Discord does not answer, or answers for a different
+account, the stored values are kept and the refresh itself is unaffected.
+
+The link poll result and `GET /v1/me` return two fields for the console: `discord_id`, and `avatar`
+(the avatar id, or null when you have none). The relay only hands out the id. The console builds the
+image address and downloads the picture from `cdn.discordapp.com` itself.
 
 The account is also marked `link_broken` when Discord refuses the access token while the relay
 connects you for presence: either Discord answers `401 Unauthorized` when the Social SDK hands it
