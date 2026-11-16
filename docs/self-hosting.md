@@ -49,13 +49,19 @@ Without the SDK, CMake stops with `Discord Social SDK not found in <dir>: see do
 
 ## 3. Build the image
 
-From the root of the repository, with the SDK in place:
+Build the image on the server that will run it, from the root of the repository, with the SDK in
+place:
 
     docker build -t nx-discord-rpc-relay:local .
 
 The build compiles the relay, runs the test suite, and produces an Ubuntu 24.04 image that runs as
 the user `ubuntu` (uid 1000). The Dockerfile copies the SDK from
-`third_party/discord_social_sdk` only.
+`third_party/discord_social_sdk` only: a `COPY` error on that path means step 2 was skipped or the
+SDK is somewhere else.
+
+The image contains the SDK. To build it on another machine, move it to the server directly
+(`docker save nx-discord-rpc-relay:local | ssh <server> docker load`) or through a private
+registry, never a public one.
 
 ### Building without Docker
 
@@ -123,11 +129,14 @@ be decrypted without it. Losing the key means every user has to link again.
 
 ## 8. Point your consoles at it
 
-On each console, set `relay_url` in `sdmc:/config/nx-discord-rpc/config.ini`:
+For each console, take the SD card out, and on a PC set `relay_url` in
+`config/nx-discord-rpc/config.ini` (`sdmc:/config/nx-discord-rpc/config.ini` on the console):
 
     relay_url = https://relay.example.com
 
-The sysmodule reads the file at boot, so restart the console. Then link the account again from the
+Edit the file with the SD card in a PC, not while the console is running: the sysmodule rewrites
+`config.ini` from its settings in memory whenever a setting changes, which would undo the edit. It
+reads the file at boot. Put the card back, start the console, then link the account again from the
 app: an API key only works with the relay that issued it.
 
 See [how-it-works.md](how-it-works.md) for what the relay stores and logs.

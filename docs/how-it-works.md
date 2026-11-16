@@ -47,8 +47,10 @@ image places at `/data/home`. Their content is managed by the SDK.
   is icon votes: a vote records that your account uploaded an icon for a given title, and it is
   kept for about 30 days (see [Icons](#icons)).
 - **IP addresses.** IPs are used only as keys for the in-memory rate limits on `POST /v1/link` and
-  `POST /v1/link/{link_id}/poll` (IPv6 addresses are cut to their /64 prefix). An entry idle for
-  an hour is swept out on a later request to the same route, and all of them are lost on restart.
+  `POST /v1/link/{link_id}/poll` (IPv6 addresses are cut to their /64 prefix). Entries are
+  swept once they have been idle for an hour, but a sweep only runs on a request to the same route
+  at most once an hour, so an idle entry can stay in memory for about two hours. All of them are
+  lost on restart.
   The relay never writes a client IP to the database or to its logs.
 - **Pending links.** A link in progress lives in memory only. Once linked, the relay keeps the new
   API key in memory for 60 seconds so that a console can fetch it again after a dropped response.
@@ -70,7 +72,9 @@ the account is marked `link_broken`; when Discord is unreachable or answers with
 the relay tries again on the next run. When Discord says the relay's own client credentials are
 invalid, the run stops without touching any account.
 
-A connection that Discord closes with "authentication failed" also marks the account `link_broken`.
+The account is also marked `link_broken` when Discord refuses the access token while the relay
+connects you for presence: either Discord answers `401 Unauthorized` when the Social SDK hands it
+the token, or it closes the connection with "authentication failed".
 
 A broken link keeps its row, including the encrypted tokens, until you unlink or link again. The
 console then gets `409 link_broken` on presence updates and should offer to link again.
@@ -79,7 +83,7 @@ console then gets `409 link_broken` on presence updates and should offer to link
 
 `DELETE /v1/me` (the Unlink action on the console):
 
-- deletes your `users` row and your pending icon votes at once, so the API key stops working;
+- deletes your `users` row and all of your icon votes at once, so the API key stops working;
 - clears your presence and disconnects you from Discord;
 - revokes your Discord access and refresh tokens a few seconds later, in the background.
 
@@ -107,7 +111,8 @@ Consoles upload the icon of the title being played. An icon must be a 256x256 JP
 Each upload is a vote from one Discord account for one image of one title. An icon is published
 once `PUBLISH_THRESHOLD` distinct accounts (2 by default) have uploaded the same image for the same
 title. A published icon is not replaced by votes. Votes are deleted 30 days after they were cast
-(the cleanup runs once a day), and when you unlink.
+(the cleanup runs once a day). Unlinking deletes all of your votes at once, including votes for
+icons already published; published icons themselves stay.
 
 Published icons are served at `/icons/{title_id}.jpg`, which is the URL Discord loads. An admin
 (holder of `ADMIN_KEY`) can publish or replace an icon directly, and can remove one, which also
@@ -137,6 +142,16 @@ The relay writes to standard output and standard error only.
 
 How long these logs are kept depends on the host. With the Compose file in `deploy/`, Docker keeps at
 most three log files of 10 MB each and rotates older lines out.
+
+## On the official instance
+
+> **TODO (author):** this section is a placeholder. Fill it in before publishing; nothing below is
+> verified yet.
+
+- **Reverse proxy logs:** TODO: what the proxy in front of the relay logs (IP addresses?) and how
+  long it keeps them.
+- **Relay log retention:** TODO: how long the host keeps the relay's logs.
+- **Backups:** TODO: whether `./data` is backed up, where, how often, and how long backups are kept.
 
 ## Who operates it
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The only translation unit that compiles the SDK's inline implementation.
 #define DISCORDPP_IMPLEMENTATION
 #include "discordpp.h"
