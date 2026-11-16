@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <unordered_set>
 
 #include "crypto.hpp"
 
@@ -19,8 +20,10 @@ Refresher::Refresher(IOAuth& oauth, Db& db, const std::array<uint8_t, 32>& token
 void Refresher::run_once(const std::function<bool()>& stopping) {
     try {
         const int64_t now = now_s_();
+        std::unordered_set<std::string> handled;
         for (const User& u : db_.users_expiring_before(now + kWindowS)) {
             if (stopping && stopping()) return;
+            handled.insert(u.discord_id);
             try {
                 if (!refresh_user(u, now)) {
                     // Every other user would be refused the same way.
@@ -32,6 +35,7 @@ void Refresher::run_once(const std::function<bool()>& stopping) {
                 std::fprintf(stderr, "refresher: user %s failed: %s\n", u.discord_id.c_str(), e.what());
             }
         }
+        backfill_identities(handled, stopping);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "refresher: run failed: %s\n", e.what());
     }
@@ -75,6 +79,20 @@ void Refresher::refresh_identity(const User& u, const std::string& access_token)
                             identity->username.empty() ? u.username : identity->username, identity->avatar);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "refresher: identity of user %s failed: %s\n", u.discord_id.c_str(), e.what());
+    }
+}
+
+// Accounts linked before avatars existed: read their identity once with the stored access token.
+// Users the refresh loop handled this run are skipped, their refresh re-reads the identity. A failure
+// leaves the user unchecked for the next pass.
+void Refresher::backfill_identities(const std::unordered_set<std::string>& handled,
+                                    const std::function<bool()>& stopping) {
+    for (const User& u : db_.users_identity_unchecked()) {
+        if (stopping && stopping()) return;
+        if (handled.contains(u.discord_id)) continue;
+        const auto access_token = open(key_, u.access_sealed);
+        if (!access_token) continue;
+        refresh_identity(u, *access_token);
     }
 }
 

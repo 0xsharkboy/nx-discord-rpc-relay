@@ -4,6 +4,8 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <unordered_set>
 
 #include "db.hpp"
 #include "oauth.hpp"
@@ -25,6 +27,8 @@ private:
     // False when Discord refused the relay's client credentials, which ends the run.
     bool refresh_user(const User& u, int64_t now);
     void break_link(const User& u);
+    void backfill_identities(const std::unordered_set<std::string>& handled,
+                             const std::function<bool()>& stopping);
     void refresh_identity(const User& u, const std::string& access_token);
 
     IOAuth& oauth_;

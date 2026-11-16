@@ -417,6 +417,7 @@ TEST_CASE("db: migrating a version 2 database keeps its users with no avatar") {
     CHECK(u->username == "old");
     CHECK(u->last_seen_at == 777);
     CHECK_FALSE(u->avatar);
+    CHECK_FALSE(u->identity_checked);
     db.reset();
     sqlite3* raw = nullptr;
     REQUIRE(sqlite3_open(t.path.string().c_str(), &raw) == SQLITE_OK);
@@ -455,4 +456,15 @@ TEST_CASE("db: update_identity stores username and avatar, and null clears it") 
     got = db->user_by_discord_id("1");
     CHECK(got->username == "alice3");
     CHECK(got->avatar == std::optional<std::string>("aa"));
+}
+
+TEST_CASE("db: update_identity marks the identity as checked") {
+    TempDb t;
+    auto db = t.open();
+    db->upsert_user(make_user("1", "h1"));
+    CHECK_FALSE(db->user_by_discord_id("1")->identity_checked);
+    CHECK_FALSE(db->update_identity("1", "stale", "x", std::nullopt));
+    CHECK_FALSE(db->user_by_discord_id("1")->identity_checked);
+    CHECK(db->update_identity("1", "h1", "alice", std::nullopt));
+    CHECK(db->user_by_discord_id("1")->identity_checked);
 }

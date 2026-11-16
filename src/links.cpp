@@ -141,6 +141,7 @@ LinkPoll Links::finish_grant(const std::string& link_id, const Tokens& t, int64_
     u.discord_id = t.discord_id;
     u.username = t.username;
     u.avatar = t.avatar;
+    u.identity_checked = true;  // the grant already read @me
     u.key_hash = sha256_hex(api_key);
     u.access_sealed = seal(key_, t.access_token);
     u.refresh_sealed = seal(key_, t.refresh_token);

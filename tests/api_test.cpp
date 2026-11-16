@@ -285,6 +285,24 @@ TEST_CASE("api: GET /v1/me returns discord_id and avatar") {
     CHECK(broken["avatar"] == hash);
 }
 
+TEST_CASE("api: GET /v1/me omits discord_id and avatar until the identity is checked") {
+    Fixture f;
+    const std::string hash = "0123456789abcdef0123456789abcdef";
+    auto key = f.link("42", "alice");
+    auto u = *f.db->user_by_discord_id("42");
+    u.identity_checked = false;
+    f.db->upsert_user(u);
+    auto m = body_of(f.cli->Get("/v1/me", bearer(key)));
+    CHECK(m["username"] == "alice");
+    CHECK_FALSE(m.contains("discord_id"));
+    CHECK_FALSE(m.contains("avatar"));
+
+    REQUIRE(f.db->update_identity("42", sha256_hex(key), "alice", hash));
+    m = body_of(f.cli->Get("/v1/me", bearer(key)));
+    CHECK(m["discord_id"] == "42");
+    CHECK(m["avatar"] == hash);
+}
+
 TEST_CASE("api: poll states map to JSON and status codes") {
     Fixture f;
     auto start = [&] {

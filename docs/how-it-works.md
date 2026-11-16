@@ -84,6 +84,10 @@ and updates your stored `username` and `avatar`, so a renamed account or a new p
 within about a week. This step is best effort: if Discord does not answer, or answers for a different
 account, the stored values are kept and the refresh itself is unaffected.
 
+Accounts linked before avatars existed have no stored avatar id yet. On its next run (shortly after
+the update), the relay reads the identity once for each of them, using the stored access token, and
+keeps trying on each later run until Discord answers. Until then `GET /v1/me` leaves `discord_id`
+and `avatar` out, so the console shows no avatar rather than a wrong one.
 The link poll result and `GET /v1/me` return two fields for the console: `discord_id`, and `avatar`
 (the avatar id, or null when you have none). The relay only hands out the id. The console builds the
 image address and downloads the picture from `cdn.discordapp.com` itself.

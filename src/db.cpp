@@ -94,7 +94,7 @@ private:
 
 constexpr const char* kUserCols =
     "discord_id, username, key_hash, access_sealed, refresh_sealed, access_expires_at, "
-    "link_broken, last_seen_at, avatar";
+    "link_broken, last_seen_at, avatar, identity_checked";
 
 User read_user(const Stmt& s) {
     User u;
@@ -107,6 +107,7 @@ User read_user(const Stmt& s) {
     u.link_broken = s.col_i64(6) != 0;
     u.last_seen_at = s.col_i64(7);
     u.avatar = s.col_opt_text(8);
+    u.identity_checked = s.col_i64(9) != 0;
     return u;
 }
 
@@ -154,7 +155,13 @@ void migrate(sqlite3* db) {
                  "CREATE INDEX IF NOT EXISTS users_last_seen ON users(last_seen_at);"
                  "PRAGMA user_version = 2");
         }
-        if (version < 3) exec(db, "ALTER TABLE users ADD COLUMN avatar TEXT; PRAGMA user_version = 3");
+        if (version < 3) {
+            // Existing links never had their avatar read: identity_checked stays 0 until the refresher does.
+            exec(db,
+                 "ALTER TABLE users ADD COLUMN avatar TEXT;"
+                 "ALTER TABLE users ADD COLUMN identity_checked INTEGER NOT NULL DEFAULT 0;"
+                 "PRAGMA user_version = 3");
+        }
         exec(db, "COMMIT");
     } catch (...) {
         sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
@@ -193,7 +200,8 @@ void Db::upsert_user(const User& u) {
         Stmt(db_,
              "INSERT OR REPLACE INTO users "
              "(discord_id, username, key_hash, access_sealed, refresh_sealed, "
-             "access_expires_at, link_broken, last_seen_at, avatar) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
+             "access_expires_at, link_broken, last_seen_at, avatar, identity_checked) "
+             "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
             .text(1, u.discord_id)
             .text(2, u.username)
             .text(3, u.key_hash)
@@ -203,6 +211,7 @@ void Db::upsert_user(const User& u) {
             .i64(7, u.link_broken ? 1 : 0)
             .i64(8, u.last_seen_at)
             .opt_text(9, u.avatar)
+            .i64(10, u.identity_checked ? 1 : 0)
             .run();
         exec(db_, "COMMIT");
     } catch (...) {
@@ -312,7 +321,7 @@ bool Db::update_tokens(std::string_view discord_id, std::string_view key_hash, s
 bool Db::update_identity(std::string_view discord_id, std::string_view key_hash, std::string_view username,
                          const std::optional<std::string>& avatar) {
     std::lock_guard lock(mu_);
-    Stmt(db_, "UPDATE users SET username = ?3, avatar = ?4 WHERE discord_id = ?1 AND key_hash = ?2")
+    Stmt(db_, "UPDATE users SET username = ?3, avatar = ?4, identity_checked = 1 WHERE discord_id = ?1 AND key_hash = ?2")
         .text(1, discord_id)
         .text(2, key_hash)
         .text(3, username)
@@ -328,6 +337,16 @@ bool Db::break_link(std::string_view discord_id, std::string_view key_hash) {
         .text(2, key_hash)
         .run();
     return sqlite3_changes(db_) > 0;
+}
+
+std::vector<User> Db::users_identity_unchecked() {
+    std::lock_guard lock(mu_);
+    Stmt s(db_, (std::string("SELECT ") + kUserCols +
+                 " FROM users WHERE identity_checked = 0 AND link_broken = 0 ORDER BY discord_id")
+                    .c_str());
+    std::vector<User> out;
+    while (s.step()) out.push_back(read_user(s));
+    return out;
 }
 
 std::vector<User> Db::users_expiring_before(int64_t unix_s) {

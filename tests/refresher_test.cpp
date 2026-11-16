@@ -59,6 +59,12 @@ struct Fixture {
         u.access_expires_at = expires_at;
         db->upsert_user(u);
     }
+    void add_unchecked(const std::string& id, bool broken = false) {
+        add_user(id, kNow + 30 * 24 * 3600);
+        auto u = *db->user_by_discord_id(id);
+        u.link_broken = broken;
+        db->upsert_user(u);
+    }
     void connect(const std::string& id) {
         presence->put(id, PresenceUpdate{"Game", "Details", 10, std::nullopt});
         presence->tick();
@@ -341,4 +347,62 @@ TEST_CASE("refresher: an empty username from the identity keeps the stored one")
     REQUIRE(u);
     CHECK(u->username == "user42");
     CHECK(u->avatar == std::optional<std::string>("abc123"));
+}
+
+TEST_CASE("refresher: an unchecked user gets its identity read without refreshing its tokens") {
+    Fixture f;
+    f.add_unchecked("42");
+    REQUIRE_FALSE(f.db->user_by_discord_id("42")->identity_checked);
+    f.oauth.identity_result = Identity{"42", "new_name", "abc123"};
+
+    f.refresher->run_once();
+
+    CHECK(f.oauth.refresh_calls == 0);
+    CHECK(f.oauth.identity_calls == 1);
+    auto u = f.db->user_by_discord_id("42");
+    REQUIRE(u);
+    CHECK(u->username == "new_name");
+    CHECK(u->avatar == std::optional<std::string>("abc123"));
+    CHECK(u->identity_checked);
+    CHECK(open(f.key, u->access_sealed) == std::optional<std::string>("access-42"));
+
+    f.refresher->run_once();
+    CHECK(f.oauth.identity_calls == 1);
+}
+
+TEST_CASE("refresher: a failed identity backfill leaves the user unchecked") {
+    Fixture f;
+    f.add_unchecked("42");
+    f.oauth.identity_result = std::nullopt;
+    f.refresher->run_once();
+    CHECK(f.oauth.identity_calls == 1);
+    CHECK_FALSE(f.db->user_by_discord_id("42")->identity_checked);
+
+    f.oauth.identity_throws = true;
+    CHECK_NOTHROW(f.refresher->run_once());
+    CHECK(f.oauth.identity_calls == 2);
+    CHECK_FALSE(f.db->user_by_discord_id("42")->identity_checked);
+
+    f.oauth.identity_throws = false;
+    f.oauth.identity_result = Identity{"43", "intruder", "zzz"};
+    f.refresher->run_once();
+    CHECK_FALSE(f.db->user_by_discord_id("42")->identity_checked);
+    CHECK(f.db->user_by_discord_id("42")->username == "user42");
+}
+
+TEST_CASE("refresher: a broken unchecked user is skipped by the backfill") {
+    Fixture f;
+    f.add_unchecked("42", true);
+    f.oauth.identity_result = Identity{"42", "x", "abc"};
+    f.refresher->run_once();
+    CHECK(f.oauth.identity_calls == 0);
+    CHECK_FALSE(f.db->user_by_discord_id("42")->identity_checked);
+}
+
+TEST_CASE("refresher: the backfill stops when asked to") {
+    Fixture f;
+    f.add_unchecked("42");
+    f.oauth.identity_result = Identity{"42", "x", "abc"};
+    f.refresher->run_once([] { return true; });
+    CHECK(f.oauth.identity_calls == 0);
 }

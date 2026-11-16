@@ -220,12 +220,13 @@ void handle_me(Deps& d, const Request& req, Response& res) {
     json presence = nullptr;
     if (auto cur = d.presence.current(user->discord_id))
         presence = json{{"name", cur->name}, {"details", cur->details}};
-    send_json(res, 200,
-              json{{"username", user->username},
-                   {"discord_id", user->discord_id},
-                   {"avatar", user->avatar ? json(*user->avatar) : json(nullptr)},
-                   {"link_broken", user->link_broken},
-                   {"presence", presence}});
+    json body{{"username", user->username}, {"link_broken", user->link_broken}, {"presence", presence}};
+    // Until the refresher has read the identity, the avatar is unknown, which is not the same as none.
+    if (user->identity_checked) {
+        body["discord_id"] = user->discord_id;
+        body["avatar"] = user->avatar ? json(*user->avatar) : json(nullptr);
+    }
+    send_json(res, 200, body);
 }
 
 void handle_unlink(Deps& d, const Request& req, Response& res) {

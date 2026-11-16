@@ -132,6 +132,7 @@ TEST_CASE("links: linking stores the avatar and the poll returns discord_id and 
     auto u = f.db->user_by_key_hash(sha256_hex(p.api_key));
     REQUIRE(u);
     CHECK(u->avatar == std::optional<std::string>(hash));
+    CHECK(u->identity_checked);
     // A repeated poll within the keep window carries them too.
     auto again = f.links->poll(id);
     CHECK(again.discord_id == "42");
