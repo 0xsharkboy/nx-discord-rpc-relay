@@ -81,11 +81,29 @@ PollResult parse_token_response(int http_status, std::string_view body) {
     if (http_status != 200) return {PollState::Error, std::nullopt};
     auto t = tokens_from(*j);
     if (!t) return {PollState::Error, std::nullopt};
-    auto id = id_token_identity(str_field(*j, "id_token"));
-    if (!id) return {PollState::Error, std::nullopt};
-    t->discord_id = id->first;
-    t->username = id->second;
+    // Discord omits id_token from device-flow responses; identity then comes from /oauth2/@me.
+    if (auto id = id_token_identity(str_field(*j, "id_token"))) {
+        t->discord_id = id->first;
+        t->username = id->second;
+    }
     return {PollState::Granted, std::move(t)};
+}
+
+std::optional<std::pair<std::string, std::string>> parse_identity_response(
+    int http_status, std::string_view body, std::string_view expected_application_id) {
+    if (http_status != 200) return std::nullopt;
+    auto j = parse_object(body);
+    if (!j) return std::nullopt;
+    if (auto app = j->find("application"); app != j->end() && app->is_object()) {
+        auto id = app->find("id");
+        if (id != app->end() && (!id->is_string() || id->get<std::string>() != expected_application_id))
+            return std::nullopt;
+    }
+    auto user = j->find("user");
+    if (user == j->end() || !user->is_object()) return std::nullopt;
+    auto uid = str_field(*user, "id");
+    if (uid.empty()) return std::nullopt;
+    return std::make_pair(std::move(uid), str_field(*user, "username"));
 }
 
 RefreshResult parse_refresh_response(int http_status, std::string_view body) {
@@ -138,6 +156,24 @@ struct HttpReply {
     std::string body;
 };
 
+const std::string& user_agent() {
+    static const std::string ua =
+        "nx-discord-rpc-relay (https://github.com/0xsharkboy/nx-discord-rpc, " + std::string(version()) + ")";
+    return ua;
+}
+
+HttpReply get_me(const std::string& access_token) {
+    httplib::SSLClient cli(kHost, 443);
+    cli.set_connection_timeout(10, 0);
+    cli.set_read_timeout(10, 0);
+    cli.set_write_timeout(10, 0);
+    cli.enable_server_certificate_verification(true);
+    httplib::Headers headers{{"User-Agent", user_agent()}, {"Authorization", "Bearer " + access_token}};
+    auto res = cli.Get("/api/v10/oauth2/@me", headers);
+    if (!res) return {};
+    return {res->status, std::move(res->body)};
+}
+
 HttpReply post_form(const std::string& id, const std::string& secret, const char* path,
                     const std::vector<std::pair<std::string, std::string>>& form) {
     httplib::SSLClient cli(kHost, 443);
@@ -146,9 +182,7 @@ HttpReply post_form(const std::string& id, const std::string& secret, const char
     cli.set_write_timeout(10, 0);
     cli.enable_server_certificate_verification(true);
     cli.set_basic_auth(id, secret);
-    std::string ua = "nx-discord-rpc-relay (https://github.com/0xsharkboy/nx-discord-rpc, " +
-                     std::string(version()) + ")";
-    httplib::Headers headers{{"User-Agent", ua}};
+    httplib::Headers headers{{"User-Agent", user_agent()}};
     auto res = cli.Post(path, headers, form_encode(form), "application/x-www-form-urlencoded");
     if (!res) return {};
     return {res->status, std::move(res->body)};
@@ -165,7 +199,23 @@ PollResult DiscordOAuth::poll(const std::string& device_code) {
     auto r = post_form(client_id_, client_secret_, "/api/v10/oauth2/token",
                        {{"grant_type", "urn:ietf:params:oauth:grant-type:device_code"},
                         {"device_code", device_code}});
-    return parse_token_response(r.status, r.body);
+    auto result = parse_token_response(r.status, r.body);
+    if (result.state != PollState::Granted || !result.tokens || !result.tokens->discord_id.empty())
+        return result;
+    // The device_code is consumed once granted, so a failed identity fetch cannot be retried:
+    // revoke the fresh token (best effort) and let the caller treat this as a failed link.
+    auto me = get_me(result.tokens->access_token);
+    auto id = parse_identity_response(me.status, me.body, client_id_);
+    if (!id) {
+        try {
+            revoke(result.tokens->access_token);
+        } catch (...) {
+        }
+        return {PollState::Error, std::nullopt};
+    }
+    result.tokens->discord_id = std::move(id->first);
+    result.tokens->username = std::move(id->second);
+    return result;
 }
 
 RefreshResult DiscordOAuth::refresh(const std::string& refresh_token) {

@@ -39,9 +39,25 @@ TEST_CASE("parse_token_response grants with identity") {
     CHECK(r.tokens->username == "test_rpc");
 }
 
+TEST_CASE("parse_token_response grants without identity") {
+    auto r = parse_token_response(200, ok_body(""));
+    REQUIRE(r.state == PollState::Granted);
+    REQUIRE(r.tokens);
+    CHECK(r.tokens->access_token == "at");
+    CHECK(r.tokens->refresh_token == "rt");
+    CHECK(r.tokens->expires_in == 604800);
+    CHECK(r.tokens->discord_id.empty());
+    CHECK(r.tokens->username.empty());
+
+    auto bad = parse_token_response(200, ok_body(R"(,"id_token":"garbage")"));
+    REQUIRE(bad.state == PollState::Granted);
+    REQUIRE(bad.tokens);
+    CHECK(bad.tokens->discord_id.empty());
+    CHECK(bad.tokens->username.empty());
+}
+
 TEST_CASE("parse_token_response errors") {
-    CHECK(parse_token_response(200, ok_body("")).state == PollState::Error);
-    CHECK(parse_token_response(200, ok_body(R"(,"id_token":"garbage")")).state == PollState::Error);
+    CHECK(parse_token_response(200, R"({"access_token":"at","expires_in":1})").state == PollState::Error);
     CHECK(parse_token_response(200, "not json").state == PollState::Error);
     CHECK(parse_token_response(500, "").state == PollState::Error);
     CHECK(parse_token_response(0, "").state == PollState::Error);
@@ -115,4 +131,28 @@ TEST_CASE("parse_device_response") {
     CHECK_FALSE(parse_device_response(500, ""));
     CHECK_FALSE(parse_device_response(200, "{}"));
     CHECK_FALSE(parse_device_response(0, ""));
+}
+
+TEST_CASE("parse_identity_response") {
+    const char* real =
+        R"({"application":{"id":"1571614802260787280","name":"app"},"expires":"2026-11-23T00:00:00+00:00","scopes":["openid","sdk.social_layer_presence"],"user":{"id":"123","username":"test_rpc","global_name":null}})";
+    auto r = parse_identity_response(200, real, "1571614802260787280");
+    REQUIRE(r);
+    CHECK(r->first == "123");
+    CHECK(r->second == "test_rpc");
+
+    CHECK_FALSE(parse_identity_response(200, real, "999"));
+    CHECK_FALSE(parse_identity_response(401, real, "1571614802260787280"));
+    CHECK_FALSE(parse_identity_response(0, "", "1571614802260787280"));
+    CHECK_FALSE(parse_identity_response(200, R"({"application":{"id":"1"}})", "1"));
+    CHECK_FALSE(parse_identity_response(200, R"({"user":{"id":""}})", "1"));
+    CHECK_FALSE(parse_identity_response(200, R"({"user":{"id":123}})", "1"));
+    CHECK_FALSE(parse_identity_response(200, R"({"user":"x"})", "1"));
+    CHECK_FALSE(parse_identity_response(200, "garbage", "1"));
+    CHECK_FALSE(parse_identity_response(200, "[]", "1"));
+
+    auto no_app = parse_identity_response(200, R"({"user":{"id":"5"}})", "1");
+    REQUIRE(no_app);
+    CHECK(no_app->first == "5");
+    CHECK(no_app->second.empty());
 }

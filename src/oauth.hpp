@@ -63,6 +63,11 @@ std::optional<std::pair<std::string, std::string>> id_token_identity(std::string
 // http_status 0 means the request never completed. 429 maps to SlowDown.
 PollResult parse_token_response(int http_status, std::string_view body);
 
+// Identity from GET /oauth2/@me. Requires 200 and user.id; when application.id is present it must
+// match, so a token minted for another app is never linked. username may be empty.
+std::optional<std::pair<std::string, std::string>> parse_identity_response(
+    int http_status, std::string_view body, std::string_view expected_application_id);
+
 // ClientError for invalid_client or unauthorized_client at any status. Revoked only for a
 // definitive rejection of the grant (invalid_grant, or any other 401); everything else that is not
 // a valid 200 is Transient so an outage never breaks links.
