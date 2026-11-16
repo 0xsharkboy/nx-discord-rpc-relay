@@ -93,7 +93,15 @@ PollResult parse_token_response(int http_status, std::string_view body) {
     return {PollState::Granted, std::move(t)};
 }
 
-std::optional<std::pair<std::string, std::string>> parse_identity_response(
+bool valid_avatar_hash(std::string_view hash) {
+    if (hash.starts_with("a_")) hash.remove_prefix(2);
+    if (hash.size() != 32) return false;
+    for (char c : hash)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
+}
+
+std::optional<Identity> parse_identity_response(
     int http_status, std::string_view body, std::string_view expected_application_id) {
     if (http_status != 200) return std::nullopt;
     auto j = parse_object(body);
@@ -107,7 +115,11 @@ std::optional<std::pair<std::string, std::string>> parse_identity_response(
     if (user == j->end() || !user->is_object()) return std::nullopt;
     auto uid = str_field(*user, "id");
     if (uid.empty()) return std::nullopt;
-    return std::make_pair(std::move(uid), str_field(*user, "username"));
+    Identity out{std::move(uid), str_field(*user, "username"), std::nullopt};
+    if (auto av = user->find("avatar"); av != user->end() && av->is_string() &&
+        valid_avatar_hash(av->get<std::string>()))
+        out.avatar = av->get<std::string>();
+    return out;
 }
 
 RefreshResult parse_refresh_response(int http_status, std::string_view body) {
@@ -204,12 +216,15 @@ PollResult DiscordOAuth::poll(const std::string& device_code) {
                        {{"grant_type", "urn:ietf:params:oauth:grant-type:device_code"},
                         {"device_code", device_code}});
     auto result = parse_token_response(r.status, r.body);
-    if (result.state != PollState::Granted || !result.tokens || !result.tokens->discord_id.empty())
+    if (result.state != PollState::Granted || !result.tokens) return result;
+    auto id = identity(result.tokens->access_token);
+    if (!result.tokens->discord_id.empty()) {
+        // The id_token already gave the identity; @me only fills the avatar, best effort.
+        if (id) result.tokens->avatar = std::move(id->avatar);
         return result;
+    }
     // The device_code is consumed once granted, so a failed identity fetch cannot be retried:
     // revoke the fresh token (best effort) and let the caller treat this as a failed link.
-    auto me = get_me(result.tokens->access_token);
-    auto id = parse_identity_response(me.status, me.body, client_id_);
     if (!id) {
         try {
             revoke(result.tokens->access_token);
@@ -217,9 +232,19 @@ PollResult DiscordOAuth::poll(const std::string& device_code) {
         }
         return {PollState::Error, std::nullopt};
     }
-    result.tokens->discord_id = std::move(id->first);
-    result.tokens->username = std::move(id->second);
+    result.tokens->discord_id = std::move(id->discord_id);
+    result.tokens->username = std::move(id->username);
+    result.tokens->avatar = std::move(id->avatar);
     return result;
+}
+
+std::optional<Identity> DiscordOAuth::identity(const std::string& access_token) {
+    try {
+        auto me = get_me(access_token);
+        return parse_identity_response(me.status, me.body, client_id_);
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 RefreshResult DiscordOAuth::refresh(const std::string& refresh_token) {

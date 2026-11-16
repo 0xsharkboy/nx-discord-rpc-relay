@@ -20,6 +20,12 @@ struct Tokens {
     std::string access_token, refresh_token;
     int64_t expires_in = 0;
     std::string discord_id, username;
+    std::optional<std::string> avatar;
+};
+
+struct Identity {
+    std::string discord_id, username;
+    std::optional<std::string> avatar;
 };
 
 enum class PollState { Pending, SlowDown, Expired, Denied, Granted, Error };
@@ -43,6 +49,8 @@ public:
     virtual PollResult poll(const std::string& device_code) = 0;
     virtual RefreshResult refresh(const std::string& refresh_token) = 0;
     virtual void revoke(const std::string& token) = 0;  // best effort
+    // GET /oauth2/@me. Never throws; nullopt on any failure.
+    virtual std::optional<Identity> identity(const std::string& access_token) = 0;
 };
 
 class DiscordOAuth : public IOAuth {
@@ -52,6 +60,7 @@ public:
     PollResult poll(const std::string& device_code) override;
     RefreshResult refresh(const std::string& refresh_token) override;
     void revoke(const std::string& token) override;
+    std::optional<Identity> identity(const std::string& access_token) override;
 
 private:
     std::string client_id_, client_secret_;
@@ -64,9 +73,13 @@ std::optional<std::pair<std::string, std::string>> id_token_identity(std::string
 // http_status 0 means the request never completed. 429 maps to SlowDown.
 PollResult parse_token_response(int http_status, std::string_view body);
 
+// Discord avatar hash: optional "a_" prefix then 32 lowercase hex digits.
+bool valid_avatar_hash(std::string_view hash);
+
 // Identity from GET /oauth2/@me. Requires 200 and user.id; when application.id is present it must
-// match, so a token minted for another app is never linked. username may be empty.
-std::optional<std::pair<std::string, std::string>> parse_identity_response(
+// match, so a token minted for another app is never linked. username may be empty;
+// avatar is set only when it is a valid hash.
+std::optional<Identity> parse_identity_response(
     int http_status, std::string_view body, std::string_view expected_application_id);
 
 // ClientError for invalid_client or unauthorized_client at any status. Revoked only for a

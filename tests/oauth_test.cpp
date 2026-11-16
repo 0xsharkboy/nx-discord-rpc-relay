@@ -139,8 +139,8 @@ TEST_CASE("parse_identity_response") {
         R"({"application":{"id":"1571614802260787280","name":"app"},"expires":"2026-11-23T00:00:00+00:00","scopes":["openid","sdk.social_layer_presence"],"user":{"id":"123","username":"test_rpc","global_name":null}})";
     auto r = parse_identity_response(200, real, "1571614802260787280");
     REQUIRE(r);
-    CHECK(r->first == "123");
-    CHECK(r->second == "test_rpc");
+    CHECK(r->discord_id == "123");
+    CHECK(r->username == "test_rpc");
 
     CHECK_FALSE(parse_identity_response(200, real, "999"));
     CHECK_FALSE(parse_identity_response(401, real, "1571614802260787280"));
@@ -154,6 +154,21 @@ TEST_CASE("parse_identity_response") {
 
     auto no_app = parse_identity_response(200, R"({"user":{"id":"5"}})", "1");
     REQUIRE(no_app);
-    CHECK(no_app->first == "5");
-    CHECK(no_app->second.empty());
+    CHECK(no_app->discord_id == "5");
+    CHECK(no_app->username.empty());
+}
+
+TEST_CASE("parse_identity_response reads the avatar hash") {
+    auto with = [](const char* avatar) {
+        return std::string(R"({"user":{"id":"5","username":"u","avatar":)") + avatar + "}}";
+    };
+    CHECK(parse_identity_response(200, with(R"("0123456789abcdef0123456789abcdef")"), "1")->avatar ==
+          "0123456789abcdef0123456789abcdef");
+    CHECK(parse_identity_response(200, with(R"("a_0123456789abcdef0123456789abcdef")"), "1")->avatar ==
+          "a_0123456789abcdef0123456789abcdef");
+    CHECK_FALSE(parse_identity_response(200, with("null"), "1")->avatar);
+    CHECK_FALSE(parse_identity_response(200, with(R"("../x")"), "1")->avatar);
+    CHECK_FALSE(parse_identity_response(200, with(R"("0123456789ABCDEF0123456789ABCDEF")"), "1")->avatar);
+    CHECK_FALSE(parse_identity_response(200, with("12"), "1")->avatar);
+    CHECK_FALSE(parse_identity_response(200, R"({"user":{"id":"5"}})", "1")->avatar);
 }
