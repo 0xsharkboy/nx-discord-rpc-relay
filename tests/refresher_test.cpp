@@ -262,3 +262,83 @@ TEST_CASE("refresher: a run without a stop predicate refreshes every expiring us
     f.refresher->run_once();
     CHECK(f.oauth.refreshed_tokens.size() == 2);
 }
+
+TEST_CASE("refresher: a refresh re-reads the identity and stores username and avatar") {
+    Fixture f;
+    f.add_user("42", kNow + 3600);
+    f.oauth.refresh_results.push_back(refreshed("access-new", "refresh-new"));
+    f.oauth.identity_result = Identity{"42", "new_name", "abc123"};
+
+    f.refresher->run_once();
+
+    CHECK(f.oauth.identity_calls == 1);
+    auto u = f.db->user_by_discord_id("42");
+    REQUIRE(u);
+    CHECK(u->username == "new_name");
+    CHECK(u->avatar == std::optional<std::string>("abc123"));
+}
+
+TEST_CASE("refresher: an identity failure keeps the stored identity and the new tokens") {
+    Fixture f;
+    f.add_user("42", kNow + 3600);
+    f.oauth.refresh_results.push_back(refreshed("access-new", "refresh-new"));
+    f.oauth.identity_result = std::nullopt;
+
+    f.refresher->run_once();
+
+    CHECK(f.oauth.identity_calls == 1);
+    auto u = f.db->user_by_discord_id("42");
+    REQUIRE(u);
+    CHECK(u->username == "user42");
+    CHECK_FALSE(u->avatar);
+    CHECK(open(f.key, u->access_sealed) == std::optional<std::string>("access-new"));
+}
+
+TEST_CASE("refresher: an identity for another user is ignored") {
+    Fixture f;
+    f.add_user("42", kNow + 3600);
+    f.oauth.refresh_results.push_back(refreshed("access-new", "refresh-new"));
+    f.oauth.identity_result = Identity{"43", "intruder", "zzz"};
+
+    f.refresher->run_once();
+
+    auto u = f.db->user_by_discord_id("42");
+    REQUIRE(u);
+    CHECK(u->username == "user42");
+    CHECK_FALSE(u->avatar);
+}
+
+TEST_CASE("refresher: an identity call that throws does not stop the run") {
+    Fixture f;
+    f.add_user("42", kNow + 3600);
+    f.add_user("43", kNow + 3600);
+    f.oauth.refresh_results.push_back(refreshed("access-a", "refresh-a"));
+    f.oauth.refresh_results.push_back(refreshed("access-b", "refresh-b"));
+    f.oauth.identity_throws = true;
+
+    CHECK_NOTHROW(f.refresher->run_once());
+
+    CHECK(f.oauth.identity_calls == 2);
+    for (const char* id : {"42", "43"}) {
+        auto u = f.db->user_by_discord_id(id);
+        REQUIRE(u);
+        auto access = open(f.key, u->access_sealed);
+        REQUIRE(access);
+        CHECK(access->rfind("access-", 0) == 0);
+        CHECK(*access != std::string("access-") + id);
+    }
+}
+
+TEST_CASE("refresher: an empty username from the identity keeps the stored one") {
+    Fixture f;
+    f.add_user("42", kNow + 3600);
+    f.oauth.refresh_results.push_back(refreshed("access-new", "refresh-new"));
+    f.oauth.identity_result = Identity{"42", "", "abc123"};
+
+    f.refresher->run_once();
+
+    auto u = f.db->user_by_discord_id("42");
+    REQUIRE(u);
+    CHECK(u->username == "user42");
+    CHECK(u->avatar == std::optional<std::string>("abc123"));
+}

@@ -49,8 +49,10 @@ bool Refresher::refresh_user(const User& u, int64_t now) {
         if (!r.tokens) return true;
         const auto access = seal(key_, r.tokens->access_token);
         const auto refresh = seal(key_, r.tokens->refresh_token);
-        if (db_.update_tokens(u.discord_id, u.key_hash, access, refresh, now + r.tokens->expires_in))
+        if (db_.update_tokens(u.discord_id, u.key_hash, access, refresh, now + r.tokens->expires_in)) {
             presence_.token_refreshed(u.discord_id);
+            refresh_identity(u, r.tokens->access_token);
+        }
         break;
     }
     case RefreshResult::State::Revoked:
@@ -62,6 +64,18 @@ bool Refresher::refresh_user(const User& u, int64_t now) {
         return false;
     }
     return true;
+}
+
+// Best effort: the tokens are already stored, so a failure here only leaves the old name and avatar.
+void Refresher::refresh_identity(const User& u, const std::string& access_token) {
+    try {
+        const auto identity = oauth_.identity(access_token);
+        if (!identity || identity->discord_id != u.discord_id) return;
+        db_.update_identity(u.discord_id, u.key_hash,
+                            identity->username.empty() ? u.username : identity->username, identity->avatar);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "refresher: identity of user %s failed: %s\n", u.discord_id.c_str(), e.what());
+    }
 }
 
 // A relink during the Discord call replaced the key: the new link is not ours to break.

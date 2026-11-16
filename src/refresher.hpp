@@ -25,6 +25,7 @@ private:
     // False when Discord refused the relay's client credentials, which ends the run.
     bool refresh_user(const User& u, int64_t now);
     void break_link(const User& u);
+    void refresh_identity(const User& u, const std::string& access_token);
 
     IOAuth& oauth_;
     Db& db_;
