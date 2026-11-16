@@ -45,9 +45,10 @@ image places at `/data/home`. Their content is managed by the SDK.
 ## What is not kept
 
 - **Play history.** Presence reports (title name, details, elapsed time, title id) are held in
-  memory only, to send them to Discord, and are never written to the database. The one exception
-  is icon votes: a vote records that your account uploaded an icon for a given title, and it is
-  kept for about 30 days (see [Icons](#icons)).
+  memory only, to send them to Discord, and their content is never written to the database. Two things are kept: the time of your last
+  update, to within an hour, in `last_seen_at` (see [Inactive accounts](#inactive-accounts)); and
+  icon votes: a vote records that your account uploaded an icon for a given title, and it is kept
+  for about 30 days (see [Icons](#icons)).
 - **IP addresses.** IPs are used only as keys for the in-memory rate limits on `POST /v1/link` and
   `POST /v1/link/{link_id}/poll` (IPv6 addresses are cut to their /64 prefix). Entries are
   swept once they have been idle for an hour, but a sweep only runs on a request to the same route
@@ -99,7 +100,8 @@ tokens and the API key: the previous key stops working at once. The relay does n
 replaced tokens: Discord revokes every token it issued to the application for an account as soon as
 any one of them is revoked, so doing so would also cut off the new link. The replaced tokens are
 revoked along with the current ones when you unlink, when the account is deleted for inactivity, or
-when you remove the application in Discord. Until then they expire on their own.
+when you remove the application in Discord. The relay overwrites the replaced tokens and
+keeps no copy of them.
 
 ## Inactive accounts
 
@@ -110,8 +112,8 @@ are deleted, and both Discord tokens are revoked a few seconds later, best effor
 gets `401 unauthorized` and has to link again.
 
 To limit writes, `last_seen_at` is updated at most once an hour per account. The check runs once a
-day, so an account is deleted about 90 days after its last update, at most a day later. Accounts that existed
-before this rule count as seen at the upgrade.
+day, so an account is deleted about 90 days after its last update, at most a day later. Accounts
+that existed before this rule count as seen at the upgrade.
 
 ## Presence
 

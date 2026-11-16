@@ -40,7 +40,10 @@ Everything else comes from the Nix flake:
 [GNU Affero General Public License v3.0 or later](LICENSE). If you run a modified relay as a
 service, you must offer its source code to its users.
 
-As an additional permission under section 7 of the license, you may convey the relay linked or
-combined with the Discord Social SDK, which is under its own proprietary license. See
-[NOTICE](NOTICE) for the exact terms. The SPDX headers stay `AGPL-3.0-or-later`, since no
-standard SPDX identifier covers this exception.
+Additional permission under GNU AGPL version 3 section 7: If you modify this program, or any
+covered work, by linking or combining it with the Discord Social SDK (or a modified version of that
+library), containing parts covered by the terms of the Discord Social SDK license, the licensors of
+this program grant you additional permission to convey the resulting work.
+
+The same text is in [NOTICE](NOTICE). The SPDX headers stay `AGPL-3.0-or-later`, since no standard
+SPDX identifier covers this exception.
