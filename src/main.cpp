@@ -87,7 +87,7 @@ void pump(IPresenceBackend& backend, std::chrono::milliseconds total) {
     }
 }
 
-void background_jobs(Refresher& refresher, Links& links, Db& db, StopFlag& stop) {
+void background_jobs(Refresher& refresher, Db& db, StopFlag& stop) {
     auto next_refresh = std::chrono::steady_clock::now();
     auto next_expiry = next_refresh;
     while (!stop.is_set()) {
@@ -104,10 +104,7 @@ void background_jobs(Refresher& refresher, Links& links, Db& db, StopFlag& stop)
             }
             next_expiry = now + kExpireVotesEvery;
         }
-        links.flush_revocations();
-        stop.wait_for(std::min({next_refresh - std::chrono::steady_clock::now(),
-                                next_expiry - std::chrono::steady_clock::now(),
-                                std::chrono::steady_clock::duration(kRevokeEvery)}));
+        stop.wait_for(std::min(next_refresh, next_expiry) - std::chrono::steady_clock::now());
     }
 }
 
@@ -198,6 +195,7 @@ int main() {
         int sig = 0;
         sigwait(&signals, &sig);
         stop.set();
+        links.stop_revocations();
         // A stop() issued before listen_after_bind() marks the server running would be lost. Not
         // wait_until_ready(): it spins forever when the accept loop has already failed.
         while (!http_done && !svr.is_running()) std::this_thread::sleep_for(1ms);
@@ -215,8 +213,12 @@ int main() {
         }
     });
 
+    // Revocations get their own thread: a refresh run never delays them, and at shutdown only a
+    // revoke already in flight is waited for, while the SDK drains.
+    std::thread revoker([&] { links.run_revocations(kRevokeEvery); });
+
     std::thread jobs([&] {
-        background_jobs(refresher, links, *db, stop);
+        background_jobs(refresher, *db, stop);
         jobs_done = true;
     });
 
@@ -254,5 +256,6 @@ int main() {
     } catch (const std::exception& e) {
         std::cerr << "relay: shutdown cleanup failed: " << e.what() << '\n';
     }
+    revoker.join();
     return listen_failed ? 1 : 0;
 }

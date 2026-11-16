@@ -15,6 +15,8 @@ using nlohmann::json;
 
 constexpr const char* kHost = "discord.com";
 constexpr const char* kScope = "openid sdk.social_layer_presence";
+// Per network step. Short so that shutdown never waits long on a best-effort revoke in flight.
+constexpr time_t kRevokeTimeoutS = 2;
 
 std::optional<json> parse_object(std::string_view body) {
     auto j = json::parse(body.begin(), body.end(), nullptr, false);
@@ -175,11 +177,11 @@ HttpReply get_me(const std::string& access_token) {
 }
 
 HttpReply post_form(const std::string& id, const std::string& secret, const char* path,
-                    const std::vector<std::pair<std::string, std::string>>& form) {
+                    const std::vector<std::pair<std::string, std::string>>& form, time_t timeout_s = 10) {
     httplib::SSLClient cli(kHost, 443);
-    cli.set_connection_timeout(10, 0);
-    cli.set_read_timeout(10, 0);
-    cli.set_write_timeout(10, 0);
+    cli.set_connection_timeout(timeout_s, 0);
+    cli.set_read_timeout(timeout_s, 0);
+    cli.set_write_timeout(timeout_s, 0);
     cli.enable_server_certificate_verification(true);
     cli.set_basic_auth(id, secret);
     httplib::Headers headers{{"User-Agent", user_agent()}};
@@ -225,7 +227,8 @@ RefreshResult DiscordOAuth::refresh(const std::string& refresh_token) {
 }
 
 void DiscordOAuth::revoke(const std::string& token) {
-    post_form(client_id_, client_secret_, "/api/v10/oauth2/token/revoke", {{"token", token}});
+    post_form(client_id_, client_secret_, "/api/v10/oauth2/token/revoke", {{"token", token}},
+              kRevokeTimeoutS);
 }
 
 }  // namespace relay

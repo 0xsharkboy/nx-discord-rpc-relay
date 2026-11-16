@@ -170,13 +170,41 @@ void Links::flush_revocations() {
         std::lock_guard lk(revoke_mu_);
         tokens.swap(pending_revocations_);
     }
-    for (const auto& token : tokens) {
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        {
+            std::lock_guard lk(revoke_mu_);
+            if (revoke_stop_) {
+                std::cerr << "relay: shutting down, " << tokens.size() - i
+                          << " token revocation(s) dropped\n";
+                return;
+            }
+        }
         try {
-            oauth_.revoke(token);
+            oauth_.revoke(tokens[i]);
         } catch (const std::exception& e) {
             std::cerr << "relay: token revocation failed: " << e.what() << '\n';
         }
     }
+}
+
+void Links::run_revocations(std::chrono::milliseconds every) {
+    for (;;) {
+        {
+            std::lock_guard lk(revoke_mu_);
+            if (revoke_stop_) return;
+        }
+        flush_revocations();
+        std::unique_lock lk(revoke_mu_);
+        revoke_cv_.wait_for(lk, every, [this] { return revoke_stop_; });
+    }
+}
+
+void Links::stop_revocations() {
+    {
+        std::lock_guard lk(revoke_mu_);
+        revoke_stop_ = true;
+    }
+    revoke_cv_.notify_all();
 }
 
 }  // namespace relay

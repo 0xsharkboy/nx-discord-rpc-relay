@@ -1,7 +1,10 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
+#include <future>
+#include <thread>
 #include <unistd.h>
 
 #include "crypto.hpp"
@@ -9,6 +12,7 @@
 #include "links.hpp"
 
 using namespace relay;
+using namespace std::chrono_literals;
 
 namespace {
 struct Fixture {
@@ -291,4 +295,69 @@ TEST_CASE("links: a failing revoke does not stop the others") {
     f.oauth.throw_on_revoke_token = "access-1";
     CHECK_NOTHROW(f.links->flush_revocations());
     CHECK(f.oauth.revoked == std::vector<std::string>{"access-1", "refresh-1"});
+}
+
+namespace {
+// Releases a blocked fake on every exit path so a failing check cannot hang the worker join.
+struct Gate {
+    std::promise<void> promise;
+    std::shared_future<void> future = promise.get_future().share();
+    bool opened = false;
+    void open() {
+        if (!opened) promise.set_value();
+        opened = true;
+    }
+    ~Gate() { open(); }
+};
+
+void link_and_unlink(Fixture& f) {
+    auto id = f.started();
+    f.oauth.poll_results.push_back(FakeOAuth::granted());
+    auto p = f.links->poll(id);
+    REQUIRE(f.links->unlink("42", sha256_hex(p.api_key)));
+}
+}  // namespace
+
+TEST_CASE("links: the revocation worker sends queued revocations") {
+    Fixture f;
+    link_and_unlink(f);
+    std::atomic<int> calls{0};
+    f.oauth.during_revoke = [&](const std::string&) { ++calls; };
+    auto worker = std::async(std::launch::async, [&] { f.links->run_revocations(10ms); });
+    const auto until = std::chrono::steady_clock::now() + 2s;
+    while (calls < 2 && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(1ms);
+    f.links->stop_revocations();
+    REQUIRE(worker.wait_for(2s) == std::future_status::ready);
+    CHECK(f.oauth.revoked == std::vector<std::string>{"access-1", "refresh-1"});
+}
+
+TEST_CASE("links: stopping wakes an idle revocation worker at once") {
+    Fixture f;
+    auto worker = std::async(std::launch::async, [&] { f.links->run_revocations(1h); });
+    std::this_thread::sleep_for(20ms);
+    const auto start = std::chrono::steady_clock::now();
+    f.links->stop_revocations();
+    REQUIRE(worker.wait_for(2s) == std::future_status::ready);
+    CHECK(std::chrono::steady_clock::now() - start < 500ms);
+}
+
+TEST_CASE("links: stopping drops queued revocations and waits only for the one in flight") {
+    Fixture f;
+    link_and_unlink(f);
+    Gate entered, release;
+    f.oauth.during_revoke = [&](const std::string& token) {
+        if (token != "access-1") return;
+        entered.open();
+        release.future.wait();
+    };
+    auto worker = std::async(std::launch::async, [&] { f.links->run_revocations(10ms); });
+    REQUIRE(entered.future.wait_for(2s) == std::future_status::ready);
+    f.links->stop_revocations();
+    release.open();
+    const auto start = std::chrono::steady_clock::now();
+    REQUIRE(worker.wait_for(2s) == std::future_status::ready);
+    CHECK(std::chrono::steady_clock::now() - start < 500ms);
+    CHECK(f.oauth.revoked == std::vector<std::string>{"access-1"});
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked == std::vector<std::string>{"access-1"});
 }

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -36,8 +38,12 @@ public:
     // request never waits on Discord.
     // Returns whether the account still held `key_hash` and was unlinked.
     bool unlink(const std::string& discord_id, const std::string& key_hash);
-    // Sends the queued revocations, best effort. Called from the background jobs thread.
+    // Sends the queued revocations, best effort. Once stopped, drops whatever is left unsent.
     void flush_revocations();
+    // Flushes every `every` until stop_revocations(). Runs on its own thread.
+    void run_revocations(std::chrono::milliseconds every);
+    // Shutdown: queued revocations are dropped and only one already in flight is waited for.
+    void stop_revocations();
 
     std::function<void(const std::string& discord_id)> on_relinked;
 
@@ -64,6 +70,8 @@ private:
     std::unordered_map<std::string, Entry> entries_;
     std::mutex revoke_mu_;
     std::vector<std::string> pending_revocations_;
+    std::condition_variable revoke_cv_;
+    bool revoke_stop_ = false;
 };
 
 }  // namespace relay

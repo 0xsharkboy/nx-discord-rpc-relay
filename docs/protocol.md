@@ -180,7 +180,7 @@ Errors: `401 unauthorized`.
 
 Auth: API key. Unlinks the account: the key stops working at once, the presence is cleared, the
 account's pending icon votes are dropped, and the Discord authorization is revoked a few seconds
-later in the background (best effort).
+later in the background (best effort: a revocation not yet sent when the relay stops is dropped).
 
 **204**, no body. Errors: `401 unauthorized`.
 
