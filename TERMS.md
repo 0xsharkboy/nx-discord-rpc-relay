@@ -46,7 +46,9 @@ These terms are governed by French law.
 
 ## Contact
 
-Open an issue at <https://github.com/0xsharkboy/nx-discord-rpc-relay/issues>.
+For questions about these terms, open an issue at
+<https://github.com/0xsharkboy/nx-discord-rpc-relay/issues>. For requests about your data, write to
+<nx-rpc@0xsharkboy.dev>.
 
 ## Changes
 

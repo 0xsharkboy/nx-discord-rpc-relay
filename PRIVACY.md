@@ -2,15 +2,15 @@
 
 Last updated: 2026-11-16
 
-This policy covers the official nx-discord-rpc relay at `https://nx-discord-rpc.0xsharkboy.dev`,
+This policy covers the official NX Discord RPC relay at `https://nx-discord-rpc.0xsharkboy.dev`,
 used by the Discord application "NX RPC" and by the
-[nx-discord-rpc](https://github.com/0xsharkboy/nx-discord-rpc) Switch homebrew by default. The
+[NX Discord RPC](https://github.com/0xsharkboy/nx-discord-rpc) Switch homebrew by default. The
 technical details behind each statement are in [How the relay works](docs/how-it-works.md).
 
 ## Who runs it
 
-The official instance is operated by 0xsharkboy on a server in the European Union. For any
-question or request, open an issue at
+The official instance is operated by 0xsharkboy on a server in the European Union. For requests
+about your data, write to <nx-rpc@0xsharkboy.dev>. For anything else, open an issue at
 <https://github.com/0xsharkboy/nx-discord-rpc-relay/issues>.
 
 ## What the relay does
@@ -99,9 +99,10 @@ its processing, to data portability, and to withdraw your consent.
   the relay from acting for you, but only breaks the link: the stored data stays until you unlink,
   link again, or the account is deleted after 90 days of inactivity.
 - **See what is stored:** the relay's `GET /v1/me` route returns your username, link status and
-  current presence to your console. For a copy of everything stored about you, open an issue.
-- **Anything else:** open an issue at <https://github.com/0xsharkboy/nx-discord-rpc-relay/issues>.
-  Do not post tokens or API keys in an issue.
+  current presence to your console. For a copy of everything stored about you, write to
+  <nx-rpc@0xsharkboy.dev> and give your Discord username.
+- **Anything else about your data:** write to <nx-rpc@0xsharkboy.dev>. Never send tokens or API
+  keys, by email or in a public issue.
 
 You also have the right to lodge a complaint with a data protection supervisory authority, such as
 the CNIL in France or the authority of the country where you live.
