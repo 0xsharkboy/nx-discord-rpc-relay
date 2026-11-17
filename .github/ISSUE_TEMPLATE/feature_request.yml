@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an idea or an improvement for the relay.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: Describe the need or the problem first, then the feature you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?

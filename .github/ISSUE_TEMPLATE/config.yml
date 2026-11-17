@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Console issue (app, sysmodule, overlay)
+    url: https://github.com/0xsharkboy/nx-discord-rpc/issues
+    about: Problems on the Switch side go to the homebrew repository.
+  - name: Request about your data
+    url: https://github.com/0xsharkboy/nx-discord-rpc-relay/blob/main/PRIVACY.md
+    about: Access to or deletion of the data the official relay holds about you (contact details in the privacy policy).

@@ -1,0 +1,54 @@
+name: Bug report
+description: Something is wrong with the relay (official instance or self-hosted).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Before you start:
+        - **Never paste secrets:** `DISCORD_CLIENT_SECRET`, `TOKEN_ENC_KEY`, `ADMIN_KEY`, API keys, or the content of `relay.env`.
+        - Problems on the console (app, sysmodule, overlay) go to
+          [nx-discord-rpc](https://github.com/0xsharkboy/nx-discord-rpc/issues).
+        - Security issues: do not open a public issue, write to nx-rpc@0xsharkboy.dev.
+  - type: dropdown
+    id: instance
+    attributes:
+      label: Which relay?
+      options:
+        - The official relay (nx-discord-rpc.0xsharkboy.dev)
+        - My own self-hosted relay
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Relay version
+      description: For a self-hosted relay, the image tag or the commit you built.
+      placeholder: "ghcr.io/...:main, or commit abc1234"
+  - type: input
+    id: client-version
+    attributes:
+      label: NX Discord RPC version on the console
+      placeholder: "0.3.0"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant relay logs (self-hosted) or the console's `log.txt`. Check that no secret appears in them.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Deployment details (Docker, reverse proxy...), screenshots...
