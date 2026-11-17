@@ -35,24 +35,24 @@ The relay keeps one SQLite database, `relay.db` in the data directory, with thes
   - `link_broken`: set when Discord no longer accepts the tokens.
   - `last_seen_at`: when the console last sent a presence update, kept to within an hour (see
     [Inactive accounts](#inactive-accounts)).
-- `votes`: icon votes, one row per (title id, image hash, Discord user id) with its creation time.
-  See [Icons](#icons).
-- `published_icons`: the title id, image hash and publication time of each published icon. It does
-  not record who voted for it.
+- `icon_files`: one row per stored icon image, with its SHA-256 hash, the time it was created and the
+  time it was last used. It has no user and no title. See [Icons](#icons).
+- `published_icons`: the title id, image hash and publication time of icons published by title
+  before v0.4.0, served read-only. It does not record who uploaded them.
 - `blocked_hashes`: hashes of images an admin removed.
 
-Published icons are also written as JPEG files under `icons/` in the data directory.
+Icons are also written as JPEG files under `icons/` in the data directory, named after their hash.
 
 The Discord Social SDK keeps its own files under the process's `HOME` directory, which the Docker
 image places at `/data/home`. Their content is managed by the SDK.
 
 ## What is not kept
 
-- **Play history.** Presence reports (title name, details, elapsed time, title id) are held in
-  memory only, to send them to Discord, and their content is never written to the database. Two things are kept: the time of your last
-  update, to within an hour, in `last_seen_at` (see [Inactive accounts](#inactive-accounts)); and
-  icon votes: a vote records that your account uploaded an icon for a given title, and it is kept
-  for about 30 days (see [Icons](#icons)).
+- **Play history.** Presence reports (title name, details, elapsed time, title id, icon hash) are held in
+  memory only, to send them to Discord, and their content is never written to the database. One thing is kept: the time of your last
+  update, to within an hour, in `last_seen_at` (see [Inactive accounts](#inactive-accounts)).
+- **Which icon you show.** The link between your account and an icon hash is held in memory during
+  your session only (see [Icons](#icons)).
 - **IP addresses.** IPs are used only as keys for the in-memory rate limits on `POST /v1/link` and
   `POST /v1/link/{link_id}/poll` (IPv6 addresses are cut to their /64 prefix). Entries are
   swept once they have been idle for an hour, but a sweep only runs on a request to the same route
@@ -105,7 +105,7 @@ console then gets `409 link_broken` on presence updates and should offer to link
 
 `DELETE /v1/me` (the Unlink action on the console):
 
-- deletes your `users` row and all of your icon votes at once, so the API key stops working;
+- deletes your `users` row at once, so the API key stops working;
 - clears your presence and disconnects you from Discord;
 - revokes your Discord access and refresh tokens a few seconds later, in the background.
 
@@ -129,7 +129,7 @@ keeps no copy of them.
 An account with no accepted presence update (`PUT /v1/presence`) for **90 days** is deleted,
 whether its link works or is broken. Linking counts as activity; updates refused with an error (such
 as `409 link_broken` or `400 invalid_body`) do not. The deletion is the same as an unlink: the
-`users` row and all of the account's icon votes are deleted, and both Discord tokens are revoked a
+`users` row is deleted, and both Discord tokens are revoked a
 few seconds later, best effort. The console then gets `401 unauthorized` and has to link again.
 
 To limit writes, `last_seen_at` is updated at most once an hour per account, and the check runs
@@ -146,18 +146,27 @@ last update. Accounts that existed before this rule count as seen at the upgrade
 
 ## Icons
 
-Consoles upload the icon of the title being played. An icon must be a 256x256 JPEG of at most
-131072 bytes; the relay re-encodes it before serving it.
+Consoles send the SHA-256 hash of the icon of the title being played with each presence update. The
+relay answers whether it already stores that image. When it does not, the console uploads it. An
+icon must be a 256x256 JPEG of at most 131072 bytes; the relay re-encodes it before serving it.
 
-Each upload is a vote from one Discord account for one image of one title. An icon is published
-once `PUBLISH_THRESHOLD` distinct accounts (2 by default) have uploaded the same image for the same
-title. A published icon is not replaced by votes. Votes are deleted 30 days after they were cast
-(the cleanup runs once a day). Unlinking deletes all of your votes at once, including votes for
-icons already published; published icons themselves stay.
+Icon files are named after the hash of the uploaded bytes and are shared: the same image uploaded
+by two users is one file. The relay stores no user and no title with a file, only its hash, the
+time it was created and the time it was last used. Which icon your presence shows is held in memory
+during your session only, and is lost when the relay restarts or you stop sending presence. The upgrade
+to this version deleted the per-user records of earlier versions and rewrote the database file so
+no user id from them stays on disk.
 
-Published icons are served at `/icons/{title_id}.jpg`, which is the URL Discord loads. An admin
-(holder of `ADMIN_KEY`) can publish or replace an icon directly, and can remove one, which also
-blocks that exact image.
+A file is used when a presence shows it and when it is uploaded. Once a day the relay deletes the
+files unused for 30 days, except those a live presence shows. The relay keeps at most 10000 files
+and refuses new images (`503 storage_full`) past that.
+
+Icons are served at `/icons/{hash}.jpg`, which is the URL Discord loads. Anyone who knows a hash can
+load its image, and a stored image can be shown by any user who sends its hash. An admin (holder of
+`ADMIN_KEY`) can remove an icon, which blocks that hash for everyone: presences that sent it show
+the Switch logo instead. Icons published by title before v0.4.0 are still served at
+`/icons/{title_id}.jpg`, read-only, unless their image is blocked, and are used when a presence has
+no usable icon.
 
 ## Rate limits
 

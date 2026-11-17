@@ -17,7 +17,7 @@ This guide runs your own relay and points your consoles at it. You need:
 3. Under **OAuth2**, reset and copy the **Client Secret**: this is your `DISCORD_CLIENT_SECRET`.
    Keep it private.
 4. Under **Rich Presence > Art Assets**, upload an image with the key `switch_logo`. The relay
-   shows it when a title has no published icon.
+   shows it when a title has no icon.
 
 What the relay needs from the application, and nothing more:
 
@@ -86,11 +86,13 @@ and fill it in, in the directory holding `compose.yml`. Keep `relay.env` readabl
 | `DISCORD_CLIENT_SECRET` | yes | The application's client secret |
 | `TOKEN_ENC_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Encrypts the stored Discord tokens |
 | `PUBLIC_BASE_URL` | yes | The relay's public URL, `https://`, no trailing slash. Icons are served from it |
-| `ADMIN_KEY` | no | Admin key for icon moderation (`PUT` and `DELETE /v1/icons/{title_id}`, see [protocol.md](protocol.md)) |
-| `PUBLISH_THRESHOLD` | no | Distinct accounts needed to publish an icon, default `2` |
+| `ADMIN_KEY` | no | Admin key for icon moderation (`PUT /v1/icons/{title_id}` and `DELETE /v1/icons/{hash}`, see [protocol.md](protocol.md)) |
 | `TRUST_PROXY` | no | `true` to key the rate limits on the first `X-Forwarded-For` hop, default `false` (the example sets `true`) |
 | `LISTEN_ADDR` | no | `host:port` to listen on inside the container, default `0.0.0.0:8080` |
 | `DATA_DIR` | no | Data directory inside the container, default `/data` |
+
+`PUBLISH_THRESHOLD` from earlier versions is no longer used: if it is still set, the relay ignores it
+and logs a line saying so.
 
 The relay refuses to start, and says which variable is wrong, when a required variable is missing or
 a value is invalid.
@@ -124,7 +126,7 @@ Set TRUST_PROXY=false only when clients reach the relay directly (local testing)
 ## 7. Backups
 
 `./data` holds the database (`relay.db`, in SQLite WAL mode, so with its `-wal` and `-shm` files),
-the published icons (`icons/`) and the SDK's home directory (`home/`). Back up the whole directory,
+the stored icons (`icons/`) and the SDK's home directory (`home/`). Back up the whole directory,
 ideally with the relay stopped, **together with `TOKEN_ENC_KEY`**: the stored Discord tokens cannot
 be decrypted without it. Losing the key means every user has to link again.
 

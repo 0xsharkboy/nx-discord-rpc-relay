@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: 2026-11-16
+Last updated: 2026-11-17
 
 This policy covers the official NX Discord RPC relay at `https://nx-discord-rpc.0xsharkboy.dev`,
 used by the Discord application "NX RPC" and by the
@@ -36,15 +36,18 @@ Stored in the relay's database:
 - **Link status and token expiry time**, to refresh the tokens and tell your console when the link
   is broken.
 - **The time of your last presence update**, to within an hour, to delete inactive accounts.
-- **Icon votes**: when your console uploads a title's icon, the relay records the title id, a hash
-  of the image, your Discord user id and the time. Votes decide which icon gets published.
-- **Published icons**: the title id, image hash and publication time, and the icon image itself.
-  A published icon does not record who voted for it.
+- **Icon files**: when your console uploads a title's icon, the relay stores the image, keyed by a
+  hash (SHA-256) of its bytes, with the dates it was created and last used. A stored icon records no
+  user and no title. Anyone who knows a hash can load the image, and a moderation block on a hash
+  applies to everyone.
+- **Icons published before this version**: the title id, image hash and publication time of icons
+  that were published by title, and the icon image itself. They do not record who uploaded them.
 
 Held in memory only, never written to the database:
 
 - **Your current presence**, as sent by the console: the title name, the details text, the elapsed
-  time and the title id. It is used only to send it to Discord.
+  time, the title id and the hash of the icon it shows. It is used only to send it to Discord.
+  This is also the only place that links you to an icon, and it lasts only as long as your session.
 - **IP addresses**, used only as keys for the rate limits on the linking routes.
 - **Links in progress**, and a newly issued API key for 60 seconds after linking.
 
@@ -61,8 +64,9 @@ The Discord Social SDK also keeps its own files on the server, managed by the SD
 
 - **Account data** (id, username, avatar id, tokens, key hash, last activity) is kept until you
   unlink. It is deleted automatically after **90 days** without an accepted presence update.
-- **Icon votes** are deleted about **30 days** after they were cast, or at once when you unlink.
-- **Published icons** stay after the votes are gone. They do not identify you.
+- **Icon files** are deleted after **30 days** without use. A file counts as used when a presence
+  shows it or when it is uploaded, and a file that a live presence shows is kept. They do not
+  identify you.
 - **Your presence** is cleared from Discord after **150 seconds** without a report from your
   console, and is lost from memory when the relay restarts.
 - **Rate limit entries** are dropped after about two hours of inactivity at most, and on restart.
@@ -76,7 +80,7 @@ The Discord Social SDK also keeps its own files on the server, managed by the SD
 - Your messages, servers, friends or any other Discord data: the requested scopes do not give
   access to them.
 - Your play history. Presence reports are not written to the database; only the time of your last
-  update and your icon votes are kept, as described above.
+  update is kept, as described above.
 - IP address logs. The relay never writes a client IP to its database or its logs. The reverse
   proxy in front of it keeps no access log for this site; its error log, kept in the host's system
   journal, can record an IP address when a request fails at the proxy.
@@ -101,8 +105,7 @@ only, and consoles reach the relay over HTTPS.
 Under the GDPR you have the right to access, correct and delete your data, to restrict or object to
 its processing, to data portability, and to withdraw your consent.
 
-- **Delete your data:** use **Unlink** in the homebrew. It deletes your account row and all of your
-  icon votes at once, clears your presence and then revokes your Discord tokens.
+- **Delete your data:** use **Unlink** in the homebrew. It deletes your account row at once, clears your presence and then revokes your Discord tokens.
 - **Revoke access in Discord:** remove "NX RPC" under User Settings > Authorized Apps. This stops
   the relay from acting for you, but only breaks the link: the stored data stays until you unlink,
   link again, or the account is deleted after 90 days of inactivity.
