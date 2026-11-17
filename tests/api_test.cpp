@@ -972,3 +972,15 @@ TEST_CASE("api: a PUT /v1/presence refused as invalid or too large is not activi
     check_error(f.put_presence(key, std::string(5000, 'x')), 413, "too_large");
     CHECK(f.db->user_by_discord_id("42")->last_seen_at == linked_at);
 }
+
+TEST_CASE("api: a presence with a stored icon records its use") {
+    Fixture f;
+    auto key = f.link();
+    const auto jpg = make_jpeg(256, 256, 1);
+    REQUIRE(f.put_icon(key, kTid, jpg)->status == 200);
+    f.now += 29LL * 86'400'000;
+    REQUIRE(f.put_presence_icon(key, kTid, sha256_hex(jpg))->status == 200);
+    f.now += 2LL * 86'400'000;
+    CHECK(f.icons->cleanup({}) == 0);
+    CHECK(f.icons->usable(sha256_hex(jpg)));
+}
