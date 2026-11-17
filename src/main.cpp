@@ -42,11 +42,10 @@ constexpr int kPollPerHour = 720;
 constexpr int kIconPerHour = 30;
 constexpr auto kTickEvery = 10ms;
 constexpr auto kRefreshEvery = 10min;
-// Daily maintenance: vote expiry and the 90 day inactive account sweep.
+// Daily maintenance: icon cleanup and the 90 day inactive account sweep.
 constexpr auto kMaintenanceEvery = 24h;
 // How long an unlinked account's tokens may wait before their revocation is sent.
 constexpr auto kRevokeEvery = 2s;
-constexpr int64_t kVoteLifetimeS = 30 * 86400;
 constexpr auto kClearDrain = 1500ms;
 constexpr auto kDisconnectDrain = 500ms;
 // How long shutdown waits, after the drains, for a revoke still in flight.
@@ -92,7 +91,7 @@ void pump(IPresenceBackend& backend, std::chrono::milliseconds total) {
     }
 }
 
-void background_jobs(Refresher& refresher, Db& db, Links& links, Presence& presence, StopFlag& stop) {
+void background_jobs(Refresher& refresher, Icons& icons, Links& links, Presence& presence, StopFlag& stop) {
     auto next_refresh = std::chrono::steady_clock::now();
     auto next_expiry = next_refresh;
     while (!stop.is_set()) {
@@ -103,9 +102,11 @@ void background_jobs(Refresher& refresher, Db& db, Links& links, Presence& prese
         }
         if (now >= next_expiry) {
             try {
-                db.expire_votes(unix_s() - kVoteLifetimeS);
+                // No presence carries a hash yet: nothing is in use.
+                const auto removed = icons.cleanup({});
+                if (removed != 0) std::cout << "relay: removed " << removed << " unused icon(s)" << std::endl;
             } catch (const std::exception& e) {
-                std::cerr << "relay: vote expiry failed: " << e.what() << '\n';
+                std::cerr << "relay: icon cleanup failed: " << e.what() << '\n';
             }
             try {
                 const auto removed = links.expire_inactive();
@@ -177,11 +178,10 @@ int main() {
     // here, Presence first.
     SdkBackend backend(application_id);
     DiscordOAuth oauth(cfg);
-    Icons icons(*db, icons_dir.string(), cfg.publish_threshold, unix_s);
+    Icons icons(*db, icons_dir.string(), kDefaultMaxIconFiles, unix_s);
     Presence presence(
         backend, *db, cfg.token_key, cfg.public_base_url,
         [&icons](const std::string& tid) { return icons.published_path(tid).has_value(); }, unix_ms);
-    icons.on_published = [&presence](const std::string& tid) { presence.icon_published(tid); };
     icons.on_unpublished = [&presence](const std::string& tid) { presence.icon_published(tid); };
     Links links(oauth, *db, cfg.token_key, unix_ms);
     links.on_relinked = [&presence](const std::string& id) { presence.drop(id); };
@@ -236,7 +236,7 @@ int main() {
     });
 
     std::thread jobs([&] {
-        background_jobs(refresher, *db, links, presence, stop);
+        background_jobs(refresher, icons, links, presence, stop);
         jobs_done = true;
     });
 

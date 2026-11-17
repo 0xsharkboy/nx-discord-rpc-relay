@@ -22,6 +22,8 @@ constexpr size_t kMaxBytes = 131072;
 constexpr int kSide = 256;
 constexpr uint64_t kMinTitleId = 0x0100000000010000ULL;
 constexpr int kJpegQuality = 90;
+// An icon's last-used time is rewritten at most this often.
+constexpr int64_t kTouchEveryS = 86400;
 
 struct StbiDeleter {
     void operator()(unsigned char* p) const { stbi_image_free(p); }
@@ -94,42 +96,106 @@ std::string normalize_title_id(std::string_view tid) {
     return s;
 }
 
-Icons::Icons(Db& db, std::string icons_dir, int threshold, std::function<int64_t()> now)
-    : db_(db), dir_(std::move(icons_dir)), threshold_(threshold), now_(std::move(now)) {
-    fs::create_directories(dir_);
+Icons::Icons(Db& db, std::string icons_dir, int64_t max_files, std::function<int64_t()> now)
+    : db_(db), dir_(std::move(icons_dir)), max_files_(max_files), now_(std::move(now)) {
+    fs::create_directories(fs::path(dir_) / "h");
+}
+
+bool Icons::valid_sha256(std::string_view s) {
+    if (s.size() != 64) return false;
+    for (char c : s)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
 }
 
 std::string Icons::path_for(const std::string& tid) const {
     return (fs::path(dir_) / (tid + ".jpg")).string();
 }
 
-IconOutcome Icons::submit(std::string_view title_id, std::string_view jpeg,
-                          std::string_view voter_discord_id, bool admin) {
-    if (!valid_title_id(title_id)) return {IconResult::Invalid};
-    if (jpeg.empty()) return {IconResult::Invalid};
-    if (jpeg.size() > kMaxBytes) return {IconResult::TooLarge};
+std::string Icons::hash_file(std::string_view sha256) const {
+    return (fs::path(dir_) / "h" / (std::string(sha256) + ".jpg")).string();
+}
+
+StoreOutcome Icons::store(std::string_view jpeg) {
+    if (jpeg.empty()) return {StoreResult::Invalid, {}};
+    if (jpeg.size() > kMaxBytes) return {StoreResult::TooLarge, {}};
     auto encoded = reencode(jpeg);
-    if (!encoded) return {IconResult::Invalid};
+    if (!encoded) return {StoreResult::Invalid, {}};
 
-    const std::string tid = normalize_title_id(title_id);
-    const std::string hash = sha256_hex(jpeg);
-    {
-        std::lock_guard lk(mu_);
-        if (db_.is_blocked(hash)) return {IconResult::Blocked};
-        const bool published = db_.published_icon(tid).has_value();
-        if (published && !admin) return {IconResult::AlreadyPublished};
-
-        int votes = 0;
-        if (!admin) {
-            votes = db_.add_vote(tid, hash, voter_discord_id, now_());
-            if (votes < threshold_) return {IconResult::Pending, votes, threshold_};
-        }
-        if (!write_atomic(path_for(tid), *encoded))
+    std::string hash = sha256_hex(jpeg);
+    std::lock_guard lk(mu_);
+    if (db_.is_blocked(hash)) return {StoreResult::Blocked, {}};
+    const auto path = hash_file(hash);
+    std::error_code ec;
+    if (db_.has_icon_file(hash)) {
+        // Known bytes: nothing to write, unless the file went missing.
+        if (!fs::exists(path, ec) && !write_atomic(path, *encoded))
             throw std::runtime_error("failed to write icon file");
-        db_.publish_icon(tid, hash, now_());
+        return {StoreResult::Stored, std::move(hash)};
     }
-    if (on_published) on_published(tid);
-    return {IconResult::Published};
+    if (db_.icon_file_count() >= max_files_) return {StoreResult::Full, {}};
+    if (!write_atomic(path, *encoded)) throw std::runtime_error("failed to write icon file");
+    db_.add_icon_file(hash, now_());
+    return {StoreResult::Stored, std::move(hash)};
+}
+
+bool Icons::usable(std::string_view sha256) {
+    if (!valid_sha256(sha256)) return false;
+    std::lock_guard lk(mu_);
+    return db_.has_icon_file(sha256) && !db_.is_blocked(sha256);
+}
+
+void Icons::touch(std::string_view sha256) {
+    if (!valid_sha256(sha256)) return;
+    const int64_t now = now_();
+    std::lock_guard lk(mu_);
+    auto [it, inserted] = touched_.try_emplace(std::string(sha256), now);
+    if (!inserted) {
+        if (now - it->second < kTouchEveryS) return;
+        it->second = now;
+    }
+    db_.touch_icon_file(sha256, now);
+}
+
+std::optional<std::string> Icons::hash_path(std::string_view sha256) {
+    if (!valid_sha256(sha256)) return std::nullopt;
+    std::lock_guard lk(mu_);
+    if (!db_.has_icon_file(sha256) || db_.is_blocked(sha256)) return std::nullopt;
+    auto p = hash_file(sha256);
+    std::error_code ec;
+    if (!fs::exists(p, ec)) return std::nullopt;
+    return p;
+}
+
+bool Icons::remove_hash(std::string_view sha256) {
+    if (!valid_sha256(sha256)) return false;
+    std::lock_guard lk(mu_);
+    const bool known = db_.has_icon_file(sha256);
+    const bool was_blocked = db_.is_blocked(sha256);
+    db_.block_hash(sha256);
+    std::error_code ec;
+    fs::remove(hash_file(sha256), ec);
+    db_.delete_icon_file(sha256);
+    touched_.erase(std::string(sha256));
+    return known || !was_blocked;
+}
+
+size_t Icons::cleanup(const std::unordered_set<std::string>& in_use) {
+    const int64_t now = now_();
+    std::lock_guard lk(mu_);
+    size_t removed = 0;
+    for (const auto& hash : db_.icon_files_unused_since(now - kIconLifetimeS)) {
+        if (in_use.contains(hash)) continue;
+        // Only well formed names reach the disk.
+        if (valid_sha256(hash)) {
+            std::error_code ec;
+            fs::remove(hash_file(hash), ec);
+        }
+        db_.delete_icon_file(hash);
+        ++removed;
+    }
+    std::erase_if(touched_, [now](const auto& kv) { return now - kv.second >= kTouchEveryS; });
+    return removed;
 }
 
 std::optional<std::string> Icons::published_path(std::string_view title_id) {

@@ -426,7 +426,6 @@ TEST_CASE("links: the inactivity sweep removes accounts unseen for 90 days and q
     Fixture f;
     const int64_t day_ms = 86'400'000;
     auto stale_hash = link_as(f, "1");
-    f.db->add_vote("T", "S", "1", f.now / 1000);
     f.now += 2 * day_ms;
     auto fresh_hash = link_as(f, "2");
     auto broken_hash = link_as(f, "3");
@@ -439,7 +438,6 @@ TEST_CASE("links: the inactivity sweep removes accounts unseen for 90 days and q
     CHECK_FALSE(f.db->user_by_key_hash(stale_hash));
     CHECK(f.db->user_by_key_hash(fresh_hash));
     CHECK(f.db->user_by_key_hash(broken_hash));
-    CHECK(f.db->add_vote("T", "S", "9", f.now / 1000) == 1);
     CHECK(f.oauth.revoked.empty());
     f.links->flush_revocations();
     CHECK(f.oauth.revoked == std::vector<std::string>{"access-1", "refresh-1"});

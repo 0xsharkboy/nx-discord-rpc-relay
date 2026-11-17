@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <ctime>
 #include <filesystem>
@@ -29,6 +30,30 @@ struct TempDb {
             std::filesystem::remove(path.string() + s);
     }
     std::unique_ptr<Db> open() const { return Db::open(path.string()); }
+    // Runs raw SQL on a second connection, for rows no Db function writes any more.
+    void exec(const char* sql) const {
+        sqlite3* raw = nullptr;
+        REQUIRE(sqlite3_open(path.string().c_str(), &raw) == SQLITE_OK);
+        sqlite3_busy_timeout(raw, 5000);
+        const int rc = sqlite3_exec(raw, sql, nullptr, nullptr, nullptr);
+        sqlite3_close(raw);
+        REQUIRE(rc == SQLITE_OK);
+    }
+    // First column of the first row, or -1.
+    int64_t scalar(const char* sql) const {
+        sqlite3* raw = nullptr;
+        REQUIRE(sqlite3_open(path.string().c_str(), &raw) == SQLITE_OK);
+        int64_t out = -1;
+        sqlite3_exec(
+            raw, sql,
+            [](void* o, int, char** vals, char**) {
+                *static_cast<int64_t*>(o) = vals[0] ? std::stoll(vals[0]) : -1;
+                return 0;
+            },
+            &out, nullptr);
+        sqlite3_close(raw);
+        return out;
+    }
 };
 
 User make_user(const std::string& id, const std::string& hash) {
@@ -94,27 +119,12 @@ TEST_CASE("db: delete_user") {
     CHECK_FALSE(db->delete_user("1", "h1"));
 }
 
-TEST_CASE("db: delete_user with a stale key hash keeps the row and its votes") {
+TEST_CASE("db: delete_user with a stale key hash keeps the row") {
     TempDb t;
     auto db = t.open();
     db->upsert_user(make_user("1", "h2"));
-    CHECK(db->add_vote("T", "S", "1", 10) == 1);
     CHECK_FALSE(db->delete_user("1", "h1"));
     CHECK(db->user_by_key_hash("h2"));
-    CHECK(db->add_vote("T", "S", "2", 11) == 2);
-}
-
-TEST_CASE("db: delete_user also removes that user's icon votes") {
-    TempDb t;
-    auto db = t.open();
-    db->upsert_user(make_user("1", "h1"));
-    db->upsert_user(make_user("2", "h2"));
-    CHECK(db->add_vote("T", "S", "1", 10) == 1);
-    CHECK(db->add_vote("T", "S", "2", 10) == 2);
-    CHECK(db->add_vote("U", "S", "1", 10) == 1);
-    CHECK(db->delete_user("1", "h1"));
-    CHECK(db->add_vote("T", "S", "2", 11) == 1);
-    CHECK(db->add_vote("U", "S", "3", 11) == 1);
 }
 
 TEST_CASE("db: link_broken round trip") {
@@ -178,49 +188,16 @@ TEST_CASE("db: users_expiring_before is strict and skips broken links") {
     CHECK(db->users_expiring_before(100).empty());
 }
 
-TEST_CASE("db: votes count distinct voters per (title, hash)") {
-    TempDb t;
-    auto db = t.open();
-    CHECK(db->add_vote("T1", "H1", "u1", 10) == 1);
-    CHECK(db->add_vote("T1", "H1", "u1", 11) == 1);
-    CHECK(db->add_vote("T1", "H1", "u2", 12) == 2);
-    CHECK(db->add_vote("T1", "H2", "u1", 13) == 1);
-    CHECK(db->add_vote("T2", "H1", "u1", 14) == 1);
-}
-
-TEST_CASE("db: a repeated vote does not refresh its timestamp") {
-    TempDb t;
-    auto db = t.open();
-    db->add_vote("T1", "H1", "u1", 10);
-    db->add_vote("T1", "H1", "u1", 1000);
-    db->expire_votes(500);
-    CHECK(db->add_vote("T1", "H1", "u2", 1000) == 1);
-}
-
-TEST_CASE("db: expire_votes removes only older votes") {
-    TempDb t;
-    auto db = t.open();
-    db->add_vote("T1", "H1", "u1", 10);
-    db->add_vote("T1", "H1", "u2", 100);
-    db->expire_votes(100);
-    CHECK(db->add_vote("T1", "H1", "u3", 200) == 2);
-    db->expire_votes(1000);
-    CHECK(db->add_vote("T1", "H1", "u4", 2000) == 1);
-}
-
-TEST_CASE("db: publish, replace, unpublish") {
+TEST_CASE("db: legacy published icons are read and unpublished") {
     TempDb t;
     auto db = t.open();
     CHECK_FALSE(db->published_icon("T1"));
-    db->publish_icon("T1", "H1", 50);
+    t.exec("INSERT INTO published_icons VALUES ('T1', 'H1', 50)");
     auto p = db->published_icon("T1");
     REQUIRE(p);
     CHECK(p->title_id == "T1");
     CHECK(p->sha256 == "H1");
     CHECK(p->published_at == 50);
-    db->publish_icon("T1", "H2", 60);
-    CHECK(db->published_icon("T1")->sha256 == "H2");
-    CHECK(db->published_icon("T1")->published_at == 60);
     db->unpublish_icon("T1");
     CHECK_FALSE(db->published_icon("T1"));
     db->unpublish_icon("T1");
@@ -241,15 +218,15 @@ TEST_CASE("db: reopening keeps data") {
     {
         auto db = t.open();
         db->upsert_user(make_user("1", "h1"));
-        db->publish_icon("T1", "H1", 5);
-        db->add_vote("T1", "H1", "u1", 5);
+        t.exec("INSERT INTO published_icons VALUES ('T1', 'H1', 5)");
+        db->add_icon_file("F1", 5);
         db->block_hash("B");
     }
     auto db = t.open();
     CHECK(db->user_by_key_hash("h1"));
     CHECK(db->published_icon("T1"));
+    CHECK(db->has_icon_file("F1"));
     CHECK(db->is_blocked("B"));
-    CHECK(db->add_vote("T1", "H1", "u2", 6) == 2);
 }
 
 TEST_CASE("db: open fails with runtime_error on an unusable path") {
@@ -331,12 +308,10 @@ TEST_CASE("db: delete_inactive_user needs the same key and a last_seen_at still 
     auto u = make_user("1", "h1");
     u.last_seen_at = 50;
     db->upsert_user(u);
-    CHECK(db->add_vote("T", "S", "1", 10) == 1);
     CHECK_FALSE(db->delete_inactive_user("1", "stale", 100));
     CHECK_FALSE(db->delete_inactive_user("1", "h1", 50));
     CHECK(db->delete_inactive_user("1", "h1", 51));
     CHECK_FALSE(db->user_by_discord_id("1"));
-    CHECK(db->add_vote("T", "S", "2", 11) == 1);
 }
 
 TEST_CASE("db: migrating a version 1 database keeps its users and marks them seen now") {
@@ -419,18 +394,95 @@ TEST_CASE("db: migrating a version 2 database keeps its users with no avatar") {
     CHECK_FALSE(u->avatar);
     CHECK_FALSE(u->identity_checked);
     db.reset();
-    sqlite3* raw = nullptr;
-    REQUIRE(sqlite3_open(t.path.string().c_str(), &raw) == SQLITE_OK);
-    int version = -1;
-    REQUIRE(sqlite3_exec(
-                raw, "PRAGMA user_version",
-                [](void* out, int, char** vals, char**) {
-                    *static_cast<int*>(out) = std::stoi(vals[0]);
-                    return 0;
-                },
-                &version, nullptr) == SQLITE_OK);
-    sqlite3_close(raw);
-    CHECK(version == 3);
+    CHECK(t.scalar("PRAGMA user_version") == 4);
+}
+
+TEST_CASE("db: schema_v4_drops_votes_and_creates_icon_files") {
+    TempDb t;
+    t.exec("CREATE TABLE users ("
+           " discord_id TEXT PRIMARY KEY,"
+           " username TEXT NOT NULL,"
+           " key_hash TEXT NOT NULL UNIQUE,"
+           " access_sealed BLOB NOT NULL,"
+           " refresh_sealed BLOB NOT NULL,"
+           " access_expires_at INTEGER NOT NULL,"
+           " link_broken INTEGER NOT NULL DEFAULT 0,"
+           " last_seen_at INTEGER NOT NULL DEFAULT 0,"
+           " avatar TEXT,"
+           " identity_checked INTEGER NOT NULL DEFAULT 0);"
+           "CREATE INDEX users_expires ON users(access_expires_at);"
+           "CREATE INDEX users_last_seen ON users(last_seen_at);"
+           "CREATE TABLE published_icons (title_id TEXT PRIMARY KEY,"
+           " sha256 TEXT NOT NULL, published_at INTEGER NOT NULL);"
+           "CREATE TABLE votes (title_id TEXT NOT NULL, sha256 TEXT NOT NULL,"
+           " discord_id TEXT NOT NULL, created_at INTEGER NOT NULL,"
+           " PRIMARY KEY (title_id, sha256, discord_id));"
+           "CREATE INDEX votes_created ON votes(created_at);"
+           "CREATE TABLE blocked_hashes (sha256 TEXT PRIMARY KEY);"
+           "INSERT INTO users VALUES ('1', 'old', 'h1', x'01', x'02', 1000, 0, 777, 'av', 1);"
+           "INSERT INTO published_icons VALUES ('0100A0D02127E000', 'H1', 50);"
+           "INSERT INTO votes VALUES ('0100A0D02127E000', 'H2', '1', 60);"
+           "INSERT INTO blocked_hashes VALUES ('B');"
+           "PRAGMA user_version = 3;");
+    {
+        auto db = t.open();
+        auto u = db->user_by_key_hash("h1");
+        REQUIRE(u);
+        CHECK(u->avatar == std::optional<std::string>("av"));
+        auto p = db->published_icon("0100A0D02127E000");
+        REQUIRE(p);
+        CHECK(p->sha256 == "H1");
+        CHECK(db->is_blocked("B"));
+        CHECK(db->icon_file_count() == 0);
+    }
+    CHECK(t.scalar("PRAGMA user_version") == 4);
+    CHECK(t.scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'votes'") == 0);
+    CHECK(t.scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'icon_files'") == 1);
+    CHECK(t.scalar("SELECT COUNT(*) FROM published_icons") == 1);
+}
+
+TEST_CASE("db: a fresh database is at version 4 without votes") {
+    TempDb t;
+    t.open().reset();
+    CHECK(t.scalar("PRAGMA user_version") == 4);
+    CHECK(t.scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'votes'") == 0);
+    CHECK(t.scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'icon_files'") == 1);
+}
+
+TEST_CASE("db: icon file rows") {
+    TempDb t;
+    auto db = t.open();
+    CHECK_FALSE(db->has_icon_file("A"));
+    CHECK(db->icon_file_count() == 0);
+    db->add_icon_file("A", 100);
+    db->add_icon_file("A", 500);
+    CHECK(db->has_icon_file("A"));
+    CHECK(db->icon_file_count() == 1);
+    CHECK(t.scalar("SELECT created_at FROM icon_files WHERE sha256 = 'A'") == 100);
+    CHECK(t.scalar("SELECT last_used_at FROM icon_files WHERE sha256 = 'A'") == 100);
+    db->touch_icon_file("A", 300);
+    CHECK(t.scalar("SELECT last_used_at FROM icon_files WHERE sha256 = 'A'") == 300);
+    CHECK(t.scalar("SELECT created_at FROM icon_files WHERE sha256 = 'A'") == 100);
+    db->touch_icon_file("missing", 300);
+    CHECK(db->icon_file_count() == 1);
+    db->delete_icon_file("A");
+    CHECK_FALSE(db->has_icon_file("A"));
+    CHECK(db->icon_file_count() == 0);
+    db->delete_icon_file("A");
+}
+
+TEST_CASE("db: icon_files_unused_since_lists_only_old_rows") {
+    TempDb t;
+    auto db = t.open();
+    db->add_icon_file("old", 10);
+    db->add_icon_file("edge", 100);
+    db->add_icon_file("new", 200);
+    db->add_icon_file("touched", 10);
+    db->touch_icon_file("touched", 150);
+    CHECK(db->icon_files_unused_since(100) == std::vector<std::string>{"old"});
+    auto got = db->icon_files_unused_since(151);
+    std::sort(got.begin(), got.end());
+    CHECK(got == std::vector<std::string>{"edge", "old", "touched"});
 }
 
 TEST_CASE("db: update_identity stores username and avatar, and null clears it") {

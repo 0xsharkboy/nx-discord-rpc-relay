@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -16,6 +17,7 @@
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+#include <sqlite3.h>
 #include <stb_image_write.h>
 
 #include "api.hpp"
@@ -97,7 +99,7 @@ struct Fixture {
     int port = 0;
     std::unique_ptr<httplib::Client> cli;
 
-    explicit Fixture(bool trust_proxy = false, bool with_admin = true) {
+    explicit Fixture(bool trust_proxy = false, bool with_admin = true, int64_t max_icon_files = kDefaultMaxIconFiles) {
         static std::atomic<int> n{0};
         root = fs::temp_directory_path() /
                ("relay_api_test_" + std::to_string(::getpid()) + "_" + std::to_string(n++));
@@ -107,18 +109,16 @@ struct Fixture {
         cfg.public_base_url = "https://x.test";
         cfg.token_key.fill(7);
         if (with_admin) cfg.admin_key = kAdminKey;
-        cfg.publish_threshold = 2;
         cfg.trust_proxy = trust_proxy;
 
         auto now_ms = [this] { return now.load(); };
         db = Db::open((root / "relay.db").string());
-        icons = std::make_unique<Icons>(*db, (root / "icons").string(), cfg.publish_threshold,
+        icons = std::make_unique<Icons>(*db, (root / "icons").string(), max_icon_files,
                                         [this] { return now.load() / 1000; });
         links = std::make_unique<Links>(oauth, *db, cfg.token_key, now_ms);
         presence = std::make_unique<Presence>(
             backend, *db, cfg.token_key, cfg.public_base_url,
             [this](const std::string& tid) { return icons->published_path(tid).has_value(); }, now_ms);
-        icons->on_published = [this](const std::string& tid) { presence->icon_published(tid); };
         icons->on_unpublished = [this](const std::string& tid) { presence->icon_published(tid); };
         links->on_relinked = [this](const std::string& id) { presence->drop(id); };
         link_limiter = std::make_unique<RateLimiter>(10, 3'600'000, now_ms);
@@ -177,6 +177,18 @@ struct Fixture {
     }
     httplib::Result put_icon(const std::string& key, const std::string& tid, const std::string& body) {
         return cli->Put("/v1/icons/" + tid, bearer(key), body, "image/jpeg");
+    }
+    // A title icon published before v0.4.0 (no route publishes one any more): its row and file.
+    void publish_legacy(const std::string& tid, const std::string& jpeg) {
+        sqlite3* raw = nullptr;
+        REQUIRE(sqlite3_open((root / "relay.db").string().c_str(), &raw) == SQLITE_OK);
+        sqlite3_busy_timeout(raw, 5000);
+        const std::string sql =
+            "INSERT INTO published_icons VALUES ('" + tid + "', '" + sha256_hex(jpeg) + "', 1)";
+        const int rc = sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, nullptr);
+        sqlite3_close(raw);
+        REQUIRE(rc == SQLITE_OK);
+        std::ofstream(root / "icons" / (tid + ".jpg"), std::ios::binary) << jpeg;
     }
 };
 
@@ -431,9 +443,7 @@ TEST_CASE("api: a valid presence reaches the backend and shows in GET /v1/me") {
 TEST_CASE("api: an absent details is sent as empty and a lower-case title id is normalized") {
     Fixture f;
     auto key = f.link();
-    auto admin = f.put_icon(kAdminKey, kTid, make_jpeg(256, 256, 1));
-    REQUIRE(admin);
-    REQUIRE(admin->status == 200);
+    f.publish_legacy(kTid, make_jpeg(256, 256, 1));
     auto r = f.put_presence(key, R"({"name":"Zelda","title_id":"0100a0d02127e000"})");
     REQUIRE(r);
     CHECK(r->status == 204);
@@ -458,9 +468,9 @@ TEST_CASE("api: a broken link gives 409 on PUT presence and shows in GET /v1/me"
     auto del = f.cli->Delete("/v1/presence", bearer(key));
     REQUIRE(del);
     CHECK(del->status == 204);
-    auto vote = f.put_icon(key, kTid, make_jpeg(256, 256, 1));
-    REQUIRE(vote);
-    CHECK(vote->status == 202);
+    auto up = f.put_icon(key, kTid, make_jpeg(256, 256, 1));
+    REQUIRE(up);
+    CHECK(up->status == 200);
 }
 
 TEST_CASE("api: DELETE /v1/me unlinks and the key stops working") {
@@ -488,29 +498,33 @@ TEST_CASE("api: keyed routes refuse a missing key") {
     check_error(f.cli->Put("/v1/icons/0100A0D02127E000", "x", "image/jpeg"), 401, "unauthorized");
 }
 
-TEST_CASE("api: two votes publish an icon that is then served") {
+TEST_CASE("api: an icon upload is stored under the hash of its bytes") {
     Fixture f;
     auto a = f.link("42", "alice");
     auto b = f.link("43", "bob");
     auto jpg = make_jpeg(256, 256, 1);
+    const auto file = f.root / "icons" / "h" / (sha256_hex(jpg) + ".jpg");
 
     auto first = f.put_icon(a, kTid, jpg);
     REQUIRE(first);
-    CHECK(first->status == 202);
-    CHECK(body_of(first) == json{{"status", "pending"}, {"votes", 1}, {"needed", 2}});
+    CHECK(first->status == 200);
+    CHECK(body_of(first) == json{{"status", "stored"}});
+    CHECK(fs::exists(file));
+    CHECK(f.icons->usable(sha256_hex(jpg)));
 
-    check_error(f.cli->Get(std::string("/icons/") + kTid + ".jpg"), 404, "not_found");
-
-    auto second = f.put_icon(b, kTid, jpg);
-    REQUIRE(second);
-    CHECK(second->status == 200);
-    CHECK(body_of(second) == json{{"status", "published"}});
-
-    auto again = f.put_icon(a, kTid, jpg);
+    auto again = f.put_icon(b, kTid, jpg);
     REQUIRE(again);
     CHECK(again->status == 200);
-    CHECK(body_of(again) == json{{"status", "already_published"}});
+    CHECK(body_of(again) == json{{"status", "stored"}});
+    CHECK(f.db->icon_file_count() == 1);
 
+    // A stored icon publishes nothing for the title.
+    check_error(f.cli->Get(std::string("/icons/") + kTid + ".jpg"), 404, "not_found");
+}
+
+TEST_CASE("api: a legacy published icon is still served") {
+    Fixture f;
+    f.publish_legacy(kTid, make_jpeg(256, 256, 1));
     auto icon = f.cli->Get(std::string("/icons/") + kTid + ".jpg");
     REQUIRE(icon);
     CHECK(icon->status == 200);
@@ -525,6 +539,14 @@ TEST_CASE("api: two votes publish an icon that is then served") {
     CHECK(lower->status == 200);
 }
 
+TEST_CASE("api: an upload beyond the storage cap gives 503") {
+    Fixture f(false, true, 1);
+    auto key = f.link();
+    REQUIRE(f.put_icon(key, kTid, make_jpeg(256, 256, 1))->status == 200);
+    check_error(f.put_icon(key, kTid, make_jpeg(256, 256, 2)), 503, "storage_full");
+    CHECK(f.put_icon(key, kTid, make_jpeg(256, 256, 1))->status == 200);
+}
+
 TEST_CASE("api: malicious icon uploads are refused") {
     Fixture f;
     auto key = f.link();
@@ -536,25 +558,15 @@ TEST_CASE("api: malicious icon uploads are refused") {
     check_error(f.put_icon(key, "not-a-tid", make_jpeg(256, 256, 1)), 400, "invalid_icon");
     check_error(f.cli->Get("/icons/0000000000000000.jpg"), 404, "not_found");
     check_error(f.cli->Get(std::string("/icons/") + kTid + ".jpg"), 404, "not_found");
-    CHECK(fs::is_empty(f.root / "icons"));
-
-    auto other = f.link("43", "bob");
-    auto vote = f.put_icon(other, kTid, make_jpeg(256, 256, 1));
-    REQUIRE(vote);
-    CHECK(vote->status == 202);
-    CHECK(body_of(vote) == json{{"status", "pending"}, {"votes", 1}, {"needed", 2}});
-    CHECK(fs::is_empty(f.root / "icons"));
+    CHECK(fs::is_empty(f.root / "icons" / "h"));
+    CHECK(f.db->icon_file_count() == 0);
 }
 
-TEST_CASE("api: admin uploads publish at once, admin delete unpublishes and blocks") {
+TEST_CASE("api: admin delete of a legacy icon unpublishes and blocks its hash") {
     Fixture f;
     auto key = f.link();
     auto jpg = make_jpeg(256, 256, 2);
-
-    auto up = f.put_icon(kAdminKey, kTid, jpg);
-    REQUIRE(up);
-    CHECK(up->status == 200);
-    CHECK(body_of(up) == json{{"status", "published"}});
+    f.publish_legacy(kTid, jpg);
     CHECK(f.cli->Get(std::string("/icons/") + kTid + ".jpg")->status == 200);
 
     check_error(f.cli->Delete(std::string("/v1/icons/") + kTid, bearer(key)), 401, "unauthorized");
@@ -572,7 +584,7 @@ TEST_CASE("api: admin uploads publish at once, admin delete unpublishes and bloc
 TEST_CASE("api: admin delete of an icon puts the logo back on presences showing it") {
     Fixture f;
     auto key = f.link();
-    REQUIRE(f.put_icon(kAdminKey, kTid, make_jpeg(256, 256, 2))->status == 200);
+    f.publish_legacy(kTid, make_jpeg(256, 256, 2));
     REQUIRE(f.put_presence(key, std::string(R"({"name":"Zelda","title_id":")") + kTid + "\"}")->status == 204);
     f.presence->tick();
     REQUIRE(f.presence->current("42"));

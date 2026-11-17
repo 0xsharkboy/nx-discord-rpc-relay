@@ -45,8 +45,7 @@ public:
     void upsert_user(const User&);
     std::optional<User> user_by_key_hash(std::string_view);
     std::optional<User> user_by_discord_id(std::string_view);
-    // Deletes the row only while it still holds `key_hash`, together with the user's pending icon
-    // votes. Returns whether a row was deleted.
+    // Deletes the row only while it still holds `key_hash`. Returns whether a row was deleted.
     bool delete_user(std::string_view discord_id, std::string_view key_hash);
     // Same as delete_user, but only while the row was also last seen before `cutoff`, so a user seen
     // again since a sweep took its snapshot is kept.
@@ -72,15 +71,21 @@ public:
     // Excludes users whose link is broken.
     std::vector<User> users_expiring_before(int64_t unix_s);
 
+    // Icons published per title before v0.4.0, kept read-only as a fallback.
     std::optional<IconRecord> published_icon(std::string_view title_id);
-    void publish_icon(std::string_view title_id, std::string_view sha256, int64_t now);
     void unpublish_icon(std::string_view title_id);
-    // Idempotent per (title, hash, voter); returns the distinct voter count for (title, hash).
-    int add_vote(std::string_view title_id, std::string_view sha256, std::string_view discord_id,
-                 int64_t now);
     void block_hash(std::string_view sha256);
     bool is_blocked(std::string_view sha256);
-    void expire_votes(int64_t older_than);
+
+    // Stored icon files, keyed by the SHA-256 of the uploaded bytes. No user or title is recorded.
+    // Inserts or ignores; a new row gets `now` as both its creation and last-used time.
+    void add_icon_file(std::string_view sha256, int64_t now);
+    bool has_icon_file(std::string_view sha256);
+    void touch_icon_file(std::string_view sha256, int64_t now);
+    // Hashes whose last use is strictly before `older_than`.
+    std::vector<std::string> icon_files_unused_since(int64_t older_than);
+    void delete_icon_file(std::string_view sha256);
+    int64_t icon_file_count();
 
 private:
     bool delete_user_where(std::string_view discord_id, std::string_view key_hash,

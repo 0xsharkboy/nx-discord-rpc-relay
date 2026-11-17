@@ -9,7 +9,7 @@ namespace relay {
 
 namespace {
 
-constexpr int kSchemaVersion = 3;
+constexpr int kSchemaVersion = 4;
 
 [[noreturn]] void fail(sqlite3* db, const char* what) {
     throw std::runtime_error(std::string("sqlite: ") + what + ": " +
@@ -162,6 +162,17 @@ void migrate(sqlite3* db) {
                  "ALTER TABLE users ADD COLUMN identity_checked INTEGER NOT NULL DEFAULT 0;"
                  "PRAGMA user_version = 3");
         }
+        if (version < 4) {
+            // Icons are stored per content hash: the per title votes go, with their voter ids.
+            exec(db,
+                 "DROP TABLE IF EXISTS votes;"
+                 "CREATE TABLE icon_files ("
+                 " sha256 TEXT PRIMARY KEY,"
+                 " created_at INTEGER NOT NULL,"
+                 " last_used_at INTEGER NOT NULL);"
+                 "CREATE INDEX icon_files_last_used ON icon_files(last_used_at);"
+                 "PRAGMA user_version = 4");
+        }
         exec(db, "COMMIT");
     } catch (...) {
         sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
@@ -262,7 +273,6 @@ bool Db::delete_user_where(std::string_view discord_id, std::string_view key_has
                 .text(2, key_hash)
                 .run();
         const bool deleted = sqlite3_changes(db_) > 0;
-        if (deleted) Stmt(db_, "DELETE FROM votes WHERE discord_id = ?1").text(1, discord_id).run();
         exec(db_, "COMMIT");
         return deleted;
     } catch (...) {
@@ -369,37 +379,9 @@ std::optional<IconRecord> Db::published_icon(std::string_view title_id) {
     return IconRecord{s.col_text(0), s.col_text(1), s.col_i64(2)};
 }
 
-void Db::publish_icon(std::string_view title_id, std::string_view sha256, int64_t now) {
-    std::lock_guard lock(mu_);
-    Stmt(db_,
-         "INSERT OR REPLACE INTO published_icons (title_id, sha256, published_at) "
-         "VALUES (?1,?2,?3)")
-        .text(1, title_id)
-        .text(2, sha256)
-        .i64(3, now)
-        .run();
-}
-
 void Db::unpublish_icon(std::string_view title_id) {
     std::lock_guard lock(mu_);
     Stmt(db_, "DELETE FROM published_icons WHERE title_id = ?1").text(1, title_id).run();
-}
-
-int Db::add_vote(std::string_view title_id, std::string_view sha256, std::string_view discord_id,
-                 int64_t now) {
-    std::lock_guard lock(mu_);
-    Stmt(db_,
-         "INSERT OR IGNORE INTO votes (title_id, sha256, discord_id, created_at) "
-         "VALUES (?1,?2,?3,?4)")
-        .text(1, title_id)
-        .text(2, sha256)
-        .text(3, discord_id)
-        .i64(4, now)
-        .run();
-    Stmt s(db_, "SELECT COUNT(*) FROM votes WHERE title_id = ?1 AND sha256 = ?2");
-    s.text(1, title_id).text(2, sha256);
-    s.step();
-    return static_cast<int>(s.col_i64(0));
 }
 
 void Db::block_hash(std::string_view sha256) {
@@ -414,9 +396,45 @@ bool Db::is_blocked(std::string_view sha256) {
     return s.step();
 }
 
-void Db::expire_votes(int64_t older_than) {
+void Db::add_icon_file(std::string_view sha256, int64_t now) {
     std::lock_guard lock(mu_);
-    Stmt(db_, "DELETE FROM votes WHERE created_at < ?1").i64(1, older_than).run();
+    Stmt(db_, "INSERT OR IGNORE INTO icon_files (sha256, created_at, last_used_at) VALUES (?1,?2,?2)")
+        .text(1, sha256)
+        .i64(2, now)
+        .run();
+}
+
+bool Db::has_icon_file(std::string_view sha256) {
+    std::lock_guard lock(mu_);
+    Stmt s(db_, "SELECT 1 FROM icon_files WHERE sha256 = ?1");
+    s.text(1, sha256);
+    return s.step();
+}
+
+void Db::touch_icon_file(std::string_view sha256, int64_t now) {
+    std::lock_guard lock(mu_);
+    Stmt(db_, "UPDATE icon_files SET last_used_at = ?2 WHERE sha256 = ?1").text(1, sha256).i64(2, now).run();
+}
+
+std::vector<std::string> Db::icon_files_unused_since(int64_t older_than) {
+    std::lock_guard lock(mu_);
+    Stmt s(db_, "SELECT sha256 FROM icon_files WHERE last_used_at < ?1 ORDER BY last_used_at");
+    s.i64(1, older_than);
+    std::vector<std::string> out;
+    while (s.step()) out.push_back(s.col_text(0));
+    return out;
+}
+
+void Db::delete_icon_file(std::string_view sha256) {
+    std::lock_guard lock(mu_);
+    Stmt(db_, "DELETE FROM icon_files WHERE sha256 = ?1").text(1, sha256).run();
+}
+
+int64_t Db::icon_file_count() {
+    std::lock_guard lock(mu_);
+    Stmt s(db_, "SELECT COUNT(*) FROM icon_files");
+    s.step();
+    return s.col_i64(0);
 }
 
 }  // namespace relay

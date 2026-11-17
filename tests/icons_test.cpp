@@ -5,12 +5,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
+#include <sqlite3.h>
 #include <stb_image.h>
 #include <stb_image_write.h>
 
@@ -40,7 +40,6 @@ std::string make_jpeg(int w, int h, int seed) {
     return out;
 }
 
-
 // stb cannot emit a real 4096x4096 JPEG under the size cap, so patch the SOF0 dimensions of a
 // small one: the header check must reject it before any pixel decode.
 std::string make_oversized_header_jpeg() {
@@ -64,37 +63,53 @@ std::string make_png(int w, int h) {
     return out;
 }
 
-std::string read_file(const std::string& p) {
+std::string read_file(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+}
+
+void write_file(const fs::path& p, const std::string& bytes) {
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    f << bytes;
+}
+
+size_t count_files(const fs::path& dir) {
+    size_t n = 0;
+    for (const auto& e : fs::directory_iterator(dir))
+        if (e.is_regular_file()) ++n;
+    return n;
 }
 
 struct Env {
     fs::path root;
     std::unique_ptr<Db> db;
     int64_t clock = 1000;
-    int fired = 0;
-    std::string last_fired;
     std::unique_ptr<Icons> icons;
 
-    explicit Env(int threshold = 2) {
+    explicit Env(int64_t max_files = kDefaultMaxIconFiles) {
         static std::atomic<int> n{0};
         root = fs::temp_directory_path() /
                ("relay_icons_test_" + std::to_string(::getpid()) + "_" + std::to_string(n++));
         fs::remove_all(root);
         fs::create_directories(root);
         db = Db::open((root / "t.db").string());
-        icons = std::make_unique<Icons>(*db, (root / "icons").string(), threshold,
-                                        [this] { return clock; });
-        icons->on_published = [this](const std::string& t) {
-            ++fired;
-            last_fired = t;
-        };
+        icons = std::make_unique<Icons>(*db, (root / "icons").string(), max_files, [this] { return clock; });
     }
     ~Env() {
         icons.reset();
         db.reset();
         fs::remove_all(root);
+    }
+    fs::path hash_file(const std::string& sha) const { return root / "icons" / "h" / (sha + ".jpg"); }
+    // A title icon published before v0.4.0: its row (no Db function writes one any more) and file.
+    void seed_legacy(const std::string& tid, const std::string& sha) {
+        sqlite3* raw = nullptr;
+        REQUIRE(sqlite3_open((root / "t.db").string().c_str(), &raw) == SQLITE_OK);
+        const std::string sql = "INSERT INTO published_icons VALUES ('" + tid + "', '" + sha + "', 1)";
+        const int rc = sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, nullptr);
+        sqlite3_close(raw);
+        REQUIRE(rc == SQLITE_OK);
+        write_file(root / "icons" / (tid + ".jpg"), make_jpeg(256, 256, 3));
     }
 };
 
@@ -115,82 +130,96 @@ TEST_CASE("valid_title_id") {
     CHECK(normalize_title_id("0100a0d02127e000") == "0100A0D02127E000");
 }
 
-TEST_CASE("icons: consensus publishing") {
+TEST_CASE("icons: valid_sha256") {
+    const std::string ok(64, 'a');
+    CHECK(Icons::valid_sha256(ok));
+    CHECK(Icons::valid_sha256(sha256_hex("x")));
+    CHECK(Icons::valid_sha256("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+    CHECK_FALSE(Icons::valid_sha256(std::string(63, 'a')));
+    CHECK_FALSE(Icons::valid_sha256(std::string(65, 'a')));
+    CHECK_FALSE(Icons::valid_sha256(std::string(64, 'A')));
+    CHECK_FALSE(Icons::valid_sha256(std::string(63, 'a') + "g"));
+    CHECK_FALSE(Icons::valid_sha256(std::string(63, 'a') + "/"));
+    CHECK_FALSE(Icons::valid_sha256(""));
+    CHECK(kDefaultMaxIconFiles == 10000);
+    CHECK(kIconLifetimeS == 30 * 86400);
+}
+
+TEST_CASE("icons: store_names_file_after_raw_hash") {
     Env e;
     auto jpg = make_jpeg(256, 256, 1);
-    auto a = e.icons->submit(TID, jpg, "A", false);
-    CHECK(a.result == IconResult::Pending);
-    CHECK(a.votes == 1);
-    CHECK(a.needed == 2);
-    CHECK_FALSE(e.icons->published_path(TID));
-    CHECK(e.fired == 0);
+    const auto sha = sha256_hex(jpg);
+    auto out = e.icons->store(jpg);
+    CHECK(out.result == StoreResult::Stored);
+    CHECK(out.sha256 == sha);
+    REQUIRE(fs::exists(e.hash_file(sha)));
+    CHECK(e.db->has_icon_file(sha));
 
-    auto b = e.icons->submit(TID, jpg, "B", false);
-    CHECK(b.result == IconResult::Published);
-    CHECK(e.fired == 1);
-    CHECK(e.last_fired == TID);
-    auto path = e.icons->published_path("0100a0d02127e000");
-    REQUIRE(path);
-    CHECK(fs::exists(*path));
-    CHECK(fs::path(*path).filename() == "0100A0D02127E000.jpg");
-
-    auto served = read_file(*path);
+    // The file holds the re-encoded image but keeps the name of the raw upload's hash.
+    auto served = read_file(e.hash_file(sha));
     CHECK(served != jpg);
     int w = 0, h = 0, c = 0;
     CHECK(stbi_info_from_memory(reinterpret_cast<const unsigned char*>(served.data()),
                                 static_cast<int>(served.size()), &w, &h, &c));
     CHECK(w == 256);
     CHECK(h == 256);
+
+    CHECK(e.icons->usable(sha));
+    auto path = e.icons->hash_path(sha);
+    REQUIRE(path);
+    CHECK(fs::path(*path) == e.hash_file(sha));
 }
 
-TEST_CASE("icons: same user twice counts once") {
+TEST_CASE("icons: store_same_bytes_twice_keeps_one_file") {
     Env e;
     auto jpg = make_jpeg(256, 256, 1);
-    CHECK(e.icons->submit(TID, jpg, "A", false).result == IconResult::Pending);
-    auto again = e.icons->submit(TID, jpg, "A", false);
-    CHECK(again.result == IconResult::Pending);
-    CHECK(again.votes == 1);
-    CHECK(e.fired == 0);
+    const auto sha = sha256_hex(jpg);
+    REQUIRE(e.icons->store(jpg).result == StoreResult::Stored);
+    // A second store of known bytes does not rewrite the file.
+    write_file(e.hash_file(sha), "marker");
+    e.clock += 50;
+    auto again = e.icons->store(jpg);
+    CHECK(again.result == StoreResult::Stored);
+    CHECK(again.sha256 == sha);
+    CHECK(read_file(e.hash_file(sha)) == "marker");
+    CHECK(e.db->icon_file_count() == 1);
+    CHECK(count_files(e.root / "icons" / "h") == 1);
+
+    // A file that went missing behind a known row is written again.
+    fs::remove(e.hash_file(sha));
+    CHECK(e.icons->store(jpg).result == StoreResult::Stored);
+    CHECK(fs::exists(e.hash_file(sha)));
+    CHECK(e.db->icon_file_count() == 1);
 }
 
-TEST_CASE("icons: different bytes do not combine votes") {
+TEST_CASE("icons: store_blocked_hash_is_refused") {
     Env e;
-    CHECK(e.icons->submit(TID, make_jpeg(256, 256, 1), "A", false).result == IconResult::Pending);
-    auto o = e.icons->submit(TID, make_jpeg(256, 256, 2), "B", false);
-    CHECK(o.result == IconResult::Pending);
-    CHECK(o.votes == 1);
+    auto jpg = make_jpeg(256, 256, 1);
+    const auto sha = sha256_hex(jpg);
+    e.db->block_hash(sha);
+    auto out = e.icons->store(jpg);
+    CHECK(out.result == StoreResult::Blocked);
+    CHECK(out.sha256.empty());
+    CHECK_FALSE(fs::exists(e.hash_file(sha)));
+    CHECK_FALSE(e.db->has_icon_file(sha));
+    CHECK_FALSE(e.icons->usable(sha));
 }
 
-TEST_CASE("icons: admin publishes immediately and replaces") {
-    Env e;
+TEST_CASE("icons: store_over_cap_is_full") {
+    Env e(1);
     auto one = make_jpeg(256, 256, 1);
     auto two = make_jpeg(256, 256, 2);
-    CHECK(e.icons->submit(TID, one, "", true).result == IconResult::Published);
-    CHECK(e.fired == 1);
-    auto path = *e.icons->published_path(TID);
-    auto before = read_file(path);
-
-    CHECK(e.icons->submit(TID, two, "", true).result == IconResult::Published);
-    CHECK(e.fired == 2);
-    CHECK(read_file(path) != before);
+    REQUIRE(e.icons->store(one).result == StoreResult::Stored);
+    auto full = e.icons->store(two);
+    CHECK(full.result == StoreResult::Full);
+    CHECK(full.sha256.empty());
+    CHECK_FALSE(fs::exists(e.hash_file(sha256_hex(two))));
+    CHECK(e.db->icon_file_count() == 1);
+    // Known bytes are still accepted at the cap.
+    CHECK(e.icons->store(one).result == StoreResult::Stored);
 }
 
-TEST_CASE("icons: non-admin upload on a published title") {
-    Env e;
-    CHECK(e.icons->submit(TID, make_jpeg(256, 256, 1), "", true).result == IconResult::Published);
-    auto two = make_jpeg(256, 256, 2);
-    auto path = *e.icons->published_path(TID);
-    auto before = read_file(path);
-
-    auto o = e.icons->submit(TID, two, "A", false);
-    CHECK(o.result == IconResult::AlreadyPublished);
-    CHECK(read_file(path) == before);
-    CHECK(e.fired == 1);
-    // A recorded vote for `two` would make this probe return 2.
-    CHECK(e.db->add_vote(TID, sha256_hex(two), "Z", e.clock) == 1);
-}
-
-TEST_CASE("icons: rejected uploads record no vote") {
+TEST_CASE("icons: rejected uploads store nothing") {
     Env e;
     auto png = make_png(256, 256);
     auto big = make_oversized_header_jpeg();
@@ -202,77 +231,132 @@ TEST_CASE("icons: rejected uploads record no vote") {
         REQUIRE(h == 4096);
     }
     REQUIRE(big.size() <= 131072);
-    std::string huge(131073, 'x');
-    auto small = make_jpeg(128, 128, 1);
 
-    CHECK(e.icons->submit(TID, png, "A", false).result == IconResult::Invalid);
-    CHECK(e.icons->submit(TID, big, "A", false).result == IconResult::Invalid);
-    CHECK(e.icons->submit(TID, huge, "A", false).result == IconResult::TooLarge);
-    CHECK(e.icons->submit(TID, small, "A", false).result == IconResult::Invalid);
-    CHECK(e.icons->submit(TID, "", "A", false).result == IconResult::Invalid);
-    CHECK(e.icons->submit(TID, "not an image", "A", false).result == IconResult::Invalid);
-
-    CHECK(e.db->add_vote(TID, sha256_hex(png), "Z", 1) == 1);
-    CHECK(e.db->add_vote(TID, sha256_hex(big), "Z", 1) == 1);
-    CHECK(e.db->add_vote(TID, sha256_hex(huge), "Z", 1) == 1);
-    CHECK_FALSE(e.icons->published_path(TID));
+    CHECK(e.icons->store(png).result == StoreResult::Invalid);
+    CHECK(e.icons->store(big).result == StoreResult::Invalid);
+    CHECK(e.icons->store(make_jpeg(128, 128, 1)).result == StoreResult::Invalid);
+    CHECK(e.icons->store("").result == StoreResult::Invalid);
+    CHECK(e.icons->store("not an image").result == StoreResult::Invalid);
+    CHECK(e.icons->store(std::string(131072, 'x')).result == StoreResult::Invalid);
+    CHECK(e.icons->store(std::string(131073, 'x')).result == StoreResult::TooLarge);
+    CHECK(e.db->icon_file_count() == 0);
+    CHECK(fs::is_empty(e.root / "icons" / "h"));
 }
 
-TEST_CASE("icons: size boundary and title id checks") {
+TEST_CASE("icons: usable and hash_path") {
     Env e;
-    std::string exact(131072, 'x');
-    CHECK(e.icons->submit(TID, exact, "A", false).result == IconResult::Invalid);
-    std::string over(131073, 'x');
-    CHECK(e.icons->submit(TID, over, "A", false).result == IconResult::TooLarge);
+    const std::string unknown(64, 'a');
+    CHECK_FALSE(e.icons->usable(unknown));
+    CHECK_FALSE(e.icons->hash_path(unknown));
+    CHECK_FALSE(e.icons->usable("../t"));
+    CHECK_FALSE(e.icons->hash_path("../t"));
+
     auto jpg = make_jpeg(256, 256, 1);
-    CHECK(e.icons->submit("0000000000000000", jpg, "A", true).result == IconResult::Invalid);
-    CHECK(e.icons->submit("0000000000000000", over, "A", true).result == IconResult::Invalid);
-    CHECK(e.fired == 0);
+    const auto sha = e.icons->store(jpg).sha256;
+    REQUIRE(e.icons->hash_path(sha));
+    fs::remove(e.hash_file(sha));
+    CHECK_FALSE(e.icons->hash_path(sha));
 }
 
-TEST_CASE("icons: admin_delete blocks the hash") {
+TEST_CASE("icons: touch writes at most once a day per hash") {
+    Env e;
+    const auto sha = e.icons->store(make_jpeg(256, 256, 1)).sha256;
+    REQUIRE(e.db->icon_files_unused_since(1001) == std::vector<std::string>{sha});
+
+    e.clock = 2000;
+    e.icons->touch(sha);
+    CHECK(e.db->icon_files_unused_since(2000).empty());
+    CHECK(e.db->icon_files_unused_since(2001) == std::vector<std::string>{sha});
+
+    e.clock = 2000 + 86399;
+    e.icons->touch(sha);
+    CHECK(e.db->icon_files_unused_since(2001) == std::vector<std::string>{sha});
+
+    e.clock = 2000 + 86400;
+    e.icons->touch(sha);
+    CHECK(e.db->icon_files_unused_since(2000 + 86400).empty());
+
+    e.icons->touch("../t");
+}
+
+TEST_CASE("icons: cleanup_spares_in_use_and_recent") {
+    Env e;
+    const auto a = e.icons->store(make_jpeg(256, 256, 1)).sha256;
+    const auto b = e.icons->store(make_jpeg(256, 256, 2)).sha256;
+    e.clock += kIconLifetimeS - 10;
+    const auto c = e.icons->store(make_jpeg(256, 256, 3)).sha256;
+    e.clock += 20;
+
+    CHECK(e.icons->cleanup({a}) == 1);
+    CHECK(e.icons->usable(a));
+    CHECK(fs::exists(e.hash_file(a)));
+    CHECK_FALSE(e.icons->usable(b));
+    CHECK_FALSE(e.db->has_icon_file(b));
+    CHECK_FALSE(fs::exists(e.hash_file(b)));
+    CHECK(e.icons->usable(c));
+    CHECK(fs::exists(e.hash_file(c)));
+    // A removed hash is not blocked: it can be stored again.
+    CHECK_FALSE(e.db->is_blocked(b));
+    CHECK(e.icons->store(make_jpeg(256, 256, 2)).result == StoreResult::Stored);
+
+    CHECK(e.icons->cleanup({}) == 1);
+    CHECK_FALSE(e.icons->usable(a));
+}
+
+TEST_CASE("icons: remove_hash_blocks_and_deletes") {
     Env e;
     auto jpg = make_jpeg(256, 256, 1);
-    CHECK_FALSE(e.icons->admin_delete(TID));
-    CHECK(e.icons->submit(TID, jpg, "", true).result == IconResult::Published);
-    auto path = *e.icons->published_path(TID);
+    const auto sha = e.icons->store(jpg).sha256;
+    CHECK(e.icons->remove_hash(sha));
+    CHECK(e.db->is_blocked(sha));
+    CHECK_FALSE(e.db->has_icon_file(sha));
+    CHECK_FALSE(fs::exists(e.hash_file(sha)));
+    CHECK_FALSE(e.icons->usable(sha));
+    CHECK_FALSE(e.icons->hash_path(sha));
+    CHECK(e.icons->store(jpg).result == StoreResult::Blocked);
+    CHECK_FALSE(e.icons->remove_hash(sha));
 
-    CHECK(e.icons->admin_delete(TID));
-    CHECK_FALSE(e.icons->published_path(TID));
-    CHECK_FALSE(fs::exists(path));
-    CHECK_FALSE(e.icons->admin_delete(TID));
+    // A hash never stored can be blocked ahead of time.
+    const std::string later(64, 'b');
+    CHECK(e.icons->remove_hash(later));
+    CHECK(e.db->is_blocked(later));
+    CHECK_FALSE(e.icons->remove_hash(later));
 
-    CHECK(e.icons->submit(TID, jpg, "A", false).result == IconResult::Blocked);
-    CHECK(e.icons->submit(TID, jpg, "", true).result == IconResult::Blocked);
-    CHECK(e.icons->submit(TID, make_jpeg(256, 256, 2), "A", false).result == IconResult::Pending);
+    CHECK_FALSE(e.icons->remove_hash("../t"));
+    CHECK_FALSE(e.db->is_blocked("../t"));
 }
 
-TEST_CASE("icons: published_path requires the file") {
+TEST_CASE("icons: a blocked hash with a leftover row is not usable") {
     Env e;
-    CHECK(e.icons->submit(TID, make_jpeg(256, 256, 1), "", true).result == IconResult::Published);
-    fs::remove(*e.icons->published_path(TID));
+    const auto sha = e.icons->store(make_jpeg(256, 256, 1)).sha256;
+    e.db->block_hash(sha);
+    CHECK_FALSE(e.icons->usable(sha));
+    CHECK_FALSE(e.icons->hash_path(sha));
+}
+
+TEST_CASE("icons: write failure throws and stores nothing") {
+    if (::geteuid() == 0) return;
+    Env e;
+    auto jpg = make_jpeg(256, 256, 1);
+    fs::permissions(e.root / "icons" / "h", fs::perms::owner_read | fs::perms::owner_exec);
+    CHECK_THROWS_AS(e.icons->store(jpg), std::runtime_error);
+    fs::permissions(e.root / "icons" / "h", fs::perms::owner_all);
+    CHECK_FALSE(e.db->has_icon_file(sha256_hex(jpg)));
+}
+
+TEST_CASE("icons: legacy published_path requires row and file") {
+    Env e;
+    CHECK_FALSE(e.icons->published_path(TID));
+    e.seed_legacy(TID, "H1");
+    auto path = e.icons->published_path("0100a0d02127e000");
+    REQUIRE(path);
+    CHECK(fs::path(*path).filename() == "0100A0D02127E000.jpg");
+    fs::remove(*path);
     CHECK_FALSE(e.icons->published_path(TID));
     CHECK_FALSE(e.icons->published_path("bad"));
 }
 
-TEST_CASE("icons: works without on_published") {
-    Env e;
-    e.icons->on_published = nullptr;
-    CHECK(e.icons->submit(TID, make_jpeg(256, 256, 1), "", true).result == IconResult::Published);
-}
-
-TEST_CASE("icons: write failure throws and publishes nothing") {
-    if (::geteuid() == 0) return;
-    Env e;
-    auto jpg = make_jpeg(256, 256, 1);
-    fs::permissions(e.root / "icons", fs::perms::owner_read | fs::perms::owner_exec);
-    CHECK_THROWS_AS(e.icons->submit(TID, jpg, "", true), std::runtime_error);
-    fs::permissions(e.root / "icons", fs::perms::owner_all);
-    CHECK_FALSE(e.icons->published_path(TID));
-    CHECK(e.fired == 0);
-}
-
-TEST_CASE("icons: admin_delete fires on_unpublished once, outside the lock") {
+TEST_CASE("icons: legacy admin_delete blocks the hash and fires on_unpublished outside the lock") {
     Env e;
     std::vector<std::string> fired;
     e.icons->on_unpublished = [&](const std::string& t) {
@@ -281,7 +365,11 @@ TEST_CASE("icons: admin_delete fires on_unpublished once, outside the lock") {
     };
     CHECK_FALSE(e.icons->admin_delete(TID));
     CHECK(fired.empty());
-    CHECK(e.icons->submit(TID, make_jpeg(256, 256, 1), "", true).result == IconResult::Published);
+    e.seed_legacy(TID, "H1");
+    auto path = *e.icons->published_path(TID);
     CHECK(e.icons->admin_delete("0100a0d02127e000"));
     CHECK(fired == std::vector<std::string>{TID});
+    CHECK_FALSE(fs::exists(path));
+    CHECK(e.db->is_blocked("H1"));
+    CHECK_FALSE(e.icons->admin_delete(TID));
 }

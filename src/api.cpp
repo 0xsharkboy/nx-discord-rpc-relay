@@ -268,26 +268,22 @@ void handle_clear_presence(Deps& d, const Request& req, Response& res) {
 
 void handle_put_icon(Deps& d, const Request& req, Response& res) {
     const auto token = bearer_token(req);
-    const bool admin = is_admin(d, token);
-    std::string voter = "admin";
-    if (!admin) {
+    if (!is_admin(d, token)) {
         auto user = user_for(d, token);
         if (!user) return send_error(res, 401, "unauthorized", "Missing or invalid API key");
         if (rate_limited(d.icon_limiter, user->key_hash, res)) return;
-        voter = user->discord_id;
     }
     const auto& tid = req.path_params.at("tid");
     if (!valid_title_id(tid)) return send_error(res, 400, "invalid_icon", "Invalid title id");
-    auto out = d.icons.submit(tid, req.body, voter, admin);
+    auto out = d.icons.store(req.body);
     switch (out.result) {
-    case IconResult::Published: return send_json(res, 200, json{{"status", "published"}});
-    case IconResult::Pending:
-        return send_json(res, 202, json{{"status", "pending"}, {"votes", out.votes}, {"needed", out.needed}});
-    case IconResult::AlreadyPublished: return send_json(res, 200, json{{"status", "already_published"}});
-    case IconResult::Invalid:
+    case StoreResult::Stored: return send_json(res, 200, json{{"status", "stored"}});
+    case StoreResult::Invalid:
         return send_error(res, 400, "invalid_icon", "Icon must be a 256x256 JPEG for a valid title id");
-    case IconResult::TooLarge: return send_error(res, 413, "too_large", "Icon must be at most 131072 bytes");
-    case IconResult::Blocked: return send_error(res, 400, "blocked", "This image was removed by an admin");
+    case StoreResult::TooLarge: return send_error(res, 413, "too_large", "Icon must be at most 131072 bytes");
+    case StoreResult::Blocked: return send_error(res, 400, "blocked", "This image was removed by an admin");
+    case StoreResult::Full:
+        return send_error(res, 503, "storage_full", "The relay stores no new icons for now, try again later");
     }
     send_error(res, 500, "internal_error", "Internal server error");
 }

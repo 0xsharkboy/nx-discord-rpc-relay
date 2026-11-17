@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "db.hpp"
 
@@ -16,41 +19,63 @@ namespace relay {
 bool valid_title_id(std::string_view tid);
 std::string normalize_title_id(std::string_view tid);
 
-enum class IconResult { Published, Pending, AlreadyPublished, Invalid, TooLarge, Blocked };
+// Global cap on stored icon files, to protect the disk.
+constexpr int64_t kDefaultMaxIconFiles = 10000;
+// A stored icon unused for this long is deleted by cleanup, unless a live presence uses it.
+constexpr int64_t kIconLifetimeS = 30 * 86400;
 
-// votes/needed are set only for Pending (distinct voters so far / threshold).
-struct IconOutcome {
-    IconResult result;
-    int votes = 0;
-    int needed = 0;
+enum class StoreResult { Stored, Invalid, TooLarge, Blocked, Full };
+
+// sha256 is set only for Stored.
+struct StoreOutcome {
+    StoreResult result;
+    std::string sha256;
 };
 
+// Icon files named after the SHA-256 of the raw uploaded bytes, under <icons_dir>/h/. The stored
+// file is the re-encoded image and is never re-hashed.
 class Icons {
 public:
     // `now` returns unix seconds.
-    Icons(Db& db, std::string icons_dir, int threshold, std::function<int64_t()> now);
+    Icons(Db& db, std::string icons_dir, int64_t max_files, std::function<int64_t()> now);
 
-    // Throws std::runtime_error if the icon file cannot be written (server I/O error); the vote
-    // recorded before the write stays.
-    IconOutcome submit(std::string_view title_id, std::string_view jpeg,
-                       std::string_view voter_discord_id, bool admin);
+    // Throws std::runtime_error if the icon file cannot be written (server I/O error); nothing is
+    // recorded then.
+    StoreOutcome store(std::string_view jpeg);
+    // The file row exists and the hash is not blocked.
+    bool usable(std::string_view sha256);
+    // Records a use of the hash, writing at most once a day per hash.
+    void touch(std::string_view sha256);
+    // The file path when the hash is usable and its file exists.
+    std::optional<std::string> hash_path(std::string_view sha256);
+    // Blocks the hash and deletes its file and row. False when the hash was unknown and already
+    // blocked, or is not a valid hash.
+    bool remove_hash(std::string_view sha256);
+    // Deletes the files and rows unused for kIconLifetimeS and not in `in_use`. Returns how many.
+    size_t cleanup(const std::unordered_set<std::string>& in_use);
+
+    // Legacy title icons published before v0.4.0, served read-only.
     std::optional<std::string> published_path(std::string_view title_id);
     // False when nothing is published for the title.
     bool admin_delete(std::string_view title_id);
 
-    // Fires once per publish or replace, never for Pending, outside the internal lock.
-    std::function<void(const std::string& title_id)> on_published;
+    // 64 lowercase hex characters.
+    static bool valid_sha256(std::string_view);
+
     // Fires after admin_delete removed a published icon, outside the internal lock.
     std::function<void(const std::string& title_id)> on_unpublished;
 
 private:
     std::string path_for(const std::string& tid) const;
+    std::string hash_file(std::string_view sha256) const;
 
     Db& db_;
     std::string dir_;
-    int threshold_;
+    int64_t max_files_;
     std::function<int64_t()> now_;
     std::mutex mu_;
+    // Last touch_icon_file per hash, to write at most once a day.
+    std::unordered_map<std::string, int64_t> touched_;
 };
 
 }  // namespace relay
