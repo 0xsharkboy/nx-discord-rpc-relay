@@ -54,16 +54,13 @@ public:
     // Deletes the files and rows unused for kIconLifetimeS and not in `in_use`. Returns how many.
     size_t cleanup(const std::unordered_set<std::string>& in_use);
 
-    // Legacy title icons published before v0.4.0, served read-only.
+    // Legacy title icons published before v0.4.0, served read-only. Nothing when its hash is blocked.
     std::optional<std::string> published_path(std::string_view title_id);
     // False when nothing is published for the title.
     bool admin_delete(std::string_view title_id);
 
     // 64 lowercase hex characters.
     static bool valid_sha256(std::string_view);
-
-    // Fires after admin_delete removed a published icon, outside the internal lock.
-    std::function<void(const std::string& title_id)> on_unpublished;
 
 private:
     std::string path_for(const std::string& tid) const;
@@ -77,5 +74,10 @@ private:
     // Last touch_icon_file per hash, to write at most once a day.
     std::unordered_map<std::string, int64_t> touched_;
 };
+
+// The large image of a presence: the usable icon hash, else the legacy icon published for the
+// title, else "switch_logo". `base_url` has no trailing slash.
+std::string presence_image(Icons& icons, const std::string& base_url, const std::optional<std::string>& title_id,
+                           const std::optional<std::string>& icon);
 
 }  // namespace relay

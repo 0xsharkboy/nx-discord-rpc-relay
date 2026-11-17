@@ -202,7 +202,9 @@ std::optional<std::string> Icons::published_path(std::string_view title_id) {
     if (!valid_title_id(title_id)) return std::nullopt;
     const std::string tid = normalize_title_id(title_id);
     std::lock_guard lk(mu_);
-    if (!db_.published_icon(tid)) return std::nullopt;
+    // A hash removed by an admin hides the legacy icon of every title that has the same bytes.
+    auto rec = db_.published_icon(tid);
+    if (!rec || db_.is_blocked(rec->sha256)) return std::nullopt;
     auto p = path_for(tid);
     std::error_code ec;
     if (!fs::exists(p, ec)) return std::nullopt;
@@ -212,17 +214,22 @@ std::optional<std::string> Icons::published_path(std::string_view title_id) {
 bool Icons::admin_delete(std::string_view title_id) {
     if (!valid_title_id(title_id)) return false;
     const std::string tid = normalize_title_id(title_id);
-    {
-        std::lock_guard lk(mu_);
-        auto rec = db_.published_icon(tid);
-        if (!rec) return false;
-        db_.unpublish_icon(tid);
-        db_.block_hash(rec->sha256);
-        std::error_code ec;
-        fs::remove(path_for(tid), ec);
-    }
-    if (on_unpublished) on_unpublished(tid);
+    std::lock_guard lk(mu_);
+    auto rec = db_.published_icon(tid);
+    if (!rec) return false;
+    db_.unpublish_icon(tid);
+    db_.block_hash(rec->sha256);
+    std::error_code ec;
+    fs::remove(path_for(tid), ec);
     return true;
+}
+
+std::string presence_image(Icons& icons, const std::string& base_url, const std::optional<std::string>& title_id,
+                           const std::optional<std::string>& icon) {
+    if (icon && icons.usable(*icon)) return base_url + "/icons/" + *icon + ".jpg";
+    if (title_id && valid_title_id(*title_id) && icons.published_path(*title_id))
+        return base_url + "/icons/" + normalize_title_id(*title_id) + ".jpg";
+    return "switch_logo";
 }
 
 }  // namespace relay

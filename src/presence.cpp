@@ -31,14 +31,12 @@ bool same_activity(const ActivitySpec& a, const std::optional<ActivitySpec>& b) 
 
 }  // namespace
 
-Presence::Presence(IPresenceBackend& backend, Db& db, const std::array<uint8_t, 32>& token_key,
-                   std::string public_base_url, std::function<bool(const std::string& tid)> icon_published,
+Presence::Presence(IPresenceBackend& backend, Db& db, const std::array<uint8_t, 32>& token_key, ImageFor image_for,
                    std::function<int64_t()> now_ms)
     : backend_(backend),
       db_(db),
       key_(token_key),
-      base_url_(std::move(public_base_url)),
-      icon_is_published_(std::move(icon_published)),
+      image_for_(std::move(image_for)),
       now_ms_(std::move(now_ms)) {
     backend_.on_connection_lost = [this](const std::string& id, bool auth_failed) {
         connection_lost(id, auth_failed);
@@ -55,8 +53,18 @@ void Presence::clear(const std::string& discord_id) { enqueue({Command::Clear, d
 
 void Presence::drop(const std::string& discord_id) { enqueue({Command::Drop, discord_id, {}, 0}); }
 
-void Presence::icon_published(const std::string& title_id) {
-    enqueue({Command::Icon, title_id, {}, 0});
+void Presence::attach_icon(const std::string& discord_id, const std::string& title_id, const std::string& sha256) {
+    PresenceUpdate u;
+    u.title_id = title_id;
+    u.icon = sha256;
+    enqueue({Command::Attach, discord_id, std::move(u), 0});
+}
+
+void Presence::icons_changed() { enqueue({Command::IconsChanged, {}, {}, 0}); }
+
+std::unordered_set<std::string> Presence::icons_in_use() {
+    std::lock_guard lk(icons_mu_);
+    return icons_in_use_;
 }
 
 void Presence::token_refreshed(const std::string& discord_id) {
@@ -95,11 +103,13 @@ void Presence::tick() {
             ++it;
         } else {
             publish(it->first, std::nullopt);
+            if (it->second.icon) icons_dirty_ = true;
             it = states_.erase(it);
         }
     }
     // Last, so that connection_lost never runs while states_ is being iterated.
     backend_.run_callbacks();
+    sync_icons();
 }
 
 void Presence::clear_all() {
@@ -116,6 +126,8 @@ void Presence::disconnect_all() {
     for (auto& [id, st] : states_)
         if (st.connected) backend_.disconnect(id);
     states_.clear();
+    icons_dirty_ = true;
+    sync_icons();
     std::lock_guard lk(snapshot_mu_);
     snapshot_.clear();
 }
@@ -125,12 +137,20 @@ void Presence::apply(const Command& c, int64_t now) {
     case Command::Put: {
         auto& st = states_[c.key];
         const auto& u = c.update;
-        st.title_id.reset();
-        if (u.title_id && valid_title_id(*u.title_id)) st.title_id = normalize_title_id(*u.title_id);
+        std::optional<std::string> tid;
+        if (u.title_id && valid_title_id(*u.title_id)) tid = normalize_title_id(*u.title_id);
+        // A v0.3 console never sends the hash: the one attached by its upload stays while the
+        // title does.
+        std::optional<std::string> icon = st.icon;
+        if (u.icon && Icons::valid_sha256(*u.icon)) icon = u.icon;
+        else if (tid != st.title_id) icon.reset();
+        if (icon != st.icon) icons_dirty_ = true;
+        st.title_id = std::move(tid);
+        st.icon = std::move(icon);
         ActivitySpec spec;
         spec.name = u.name;
         spec.details = u.details;
-        spec.large_image = image_for(st.title_id);
+        spec.large_image = image_for(st);
         spec.large_text = u.name;
         if (u.elapsed_s) spec.start_unix_s = c.at_ms / 1000 - *u.elapsed_s;
         st.desired = std::move(spec);
@@ -153,11 +173,23 @@ void Presence::apply(const Command& c, int64_t now) {
         forget(c.key);
         break;
     }
-    case Command::Icon: {
-        if (!valid_title_id(c.key)) break;
-        const auto tid = normalize_title_id(c.key);
+    case Command::Attach: {
+        // An upload that arrives after the title changed only stores the file.
+        auto it = states_.find(c.key);
+        const auto& u = c.update;
+        if (it == states_.end() || !u.title_id || !valid_title_id(*u.title_id) || !u.icon ||
+            !Icons::valid_sha256(*u.icon))
+            break;
+        auto& st = it->second;
+        if (st.title_id != normalize_title_id(*u.title_id)) break;
+        if (st.icon != u.icon) icons_dirty_ = true;
+        st.icon = u.icon;
+        if (st.desired) st.desired->large_image = image_for(st);
+        break;
+    }
+    case Command::IconsChanged: {
         for (auto& [id, st] : states_)
-            if (st.title_id == tid && st.desired) st.desired->large_image = image_for(tid);
+            if (st.desired) st.desired->large_image = image_for(st);
         break;
     }
     case Command::Token: {
@@ -215,7 +247,7 @@ void Presence::clear_user(const std::string& id, UserState& st, int64_t now) {
 }
 
 void Presence::forget(const std::string& id) {
-    states_.erase(id);
+    if (states_.erase(id) != 0) icons_dirty_ = true;
     publish(id, std::nullopt);
 }
 
@@ -254,14 +286,23 @@ Presence::TokenLookup Presence::access_token(const std::string& id, int64_t now)
     return {TokenLookup::Ready, std::move(*token), std::move(user->key_hash)};
 }
 
-std::string Presence::image_for(const std::optional<std::string>& tid) {
-    if (!tid) return "switch_logo";
+std::string Presence::image_for(const UserState& st) {
     try {
-        if (icon_is_published_(*tid)) return base_url_ + "/icons/" + *tid + ".jpg";
+        return image_for_(st.title_id, st.icon);
     } catch (const std::exception& e) {
-        std::cerr << "relay: presence could not look up the icon of " << *tid << ": " << e.what() << '\n';
+        std::cerr << "relay: presence could not look up an icon: " << e.what() << '\n';
     }
     return "switch_logo";
+}
+
+void Presence::sync_icons() {
+    if (!icons_dirty_) return;
+    std::unordered_set<std::string> in_use;
+    for (const auto& [id, st] : states_)
+        if (st.icon) in_use.insert(*st.icon);
+    std::lock_guard lk(icons_mu_);
+    icons_in_use_.swap(in_use);
+    icons_dirty_ = false;
 }
 
 void Presence::publish(const std::string& id, const std::optional<ActivitySpec>& spec) {

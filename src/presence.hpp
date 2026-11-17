@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "db.hpp"
@@ -19,15 +20,20 @@ struct PresenceUpdate {
     std::string name, details;
     std::optional<int64_t> elapsed_s;
     std::optional<std::string> title_id;
+    // An icon hash (64 lowercase hex) the caller has validated.
+    std::optional<std::string> icon;
 };
+
+// The large image of a presence: an image URL or "switch_logo".
+using ImageFor = std::function<std::string(const std::optional<std::string>& title_id,
+                                           const std::optional<std::string>& icon)>;
 
 // Public methods other than tick() only enqueue and are safe from any thread. tick() and every
 // backend call run on the SDK thread.
 class Presence {
 public:
     // `now_ms` returns unix milliseconds.
-    Presence(IPresenceBackend& backend, Db& db, const std::array<uint8_t, 32>& token_key,
-             std::string public_base_url, std::function<bool(const std::string& tid)> icon_published,
+    Presence(IPresenceBackend& backend, Db& db, const std::array<uint8_t, 32>& token_key, ImageFor image_for,
              std::function<int64_t()> now_ms);
     ~Presence();
     Presence(const Presence&) = delete;
@@ -36,12 +42,16 @@ public:
     void put(const std::string& discord_id, const PresenceUpdate&);
     void clear(const std::string& discord_id);
     void drop(const std::string& discord_id);
-    // Re-evaluates the image of every user showing the title; call it on publish and unpublish.
-    void icon_published(const std::string& title_id);
+    // Attaches an uploaded icon to the user's presence, only while it shows that title.
+    void attach_icon(const std::string& discord_id, const std::string& title_id, const std::string& sha256);
+    // Re-evaluates every user's image; call it after an icon was removed.
+    void icons_changed();
     void token_refreshed(const std::string& discord_id);
     void tick();
     // The activity last sent to the backend; nullopt when cleared, not yet sent or unknown.
     std::optional<ActivitySpec> current(const std::string& discord_id);
+    // The icon hashes held by the users' presences as of the last tick.
+    std::unordered_set<std::string> icons_in_use();
 
     // Shutdown, on the SDK thread once no request can enqueue anymore. clear_all() discards queued
     // commands and clears every shown activity; disconnect_all() then ends every client. Pump the
@@ -51,7 +61,7 @@ public:
 
 private:
     struct Command {
-        enum Kind { Put, Clear, Drop, Icon, Token } kind;
+        enum Kind { Put, Clear, Drop, Attach, IconsChanged, Token } kind;
         std::string key;
         PresenceUpdate update;
         int64_t at_ms = 0;
@@ -62,6 +72,8 @@ private:
         std::optional<int64_t> last_sent_ms, last_connect_ms, cleared_at_ms;
         int64_t last_seen_ms = 0;
         std::optional<std::string> title_id;
+        // Kept across heartbeats of the same title, dropped when the title changes.
+        std::optional<std::string> icon;
         // The link the client was connected with; an auth loss may only break that one.
         std::string key_hash;
     };
@@ -79,14 +91,15 @@ private:
         std::string token, key_hash;
     };
     TokenLookup access_token(const std::string& id, int64_t now);
-    std::string image_for(const std::optional<std::string>& tid);
+    std::string image_for(const UserState& st);
     void publish(const std::string& id, const std::optional<ActivitySpec>& spec);
+    // Refreshes the set icons_in_use() returns, when an icon or the set of users changed.
+    void sync_icons();
 
     IPresenceBackend& backend_;
     Db& db_;
     std::array<uint8_t, 32> key_;
-    std::string base_url_;
-    std::function<bool(const std::string&)> icon_is_published_;
+    ImageFor image_for_;
     std::function<int64_t()> now_ms_;
 
     std::mutex queue_mu_;
@@ -96,6 +109,10 @@ private:
     std::unordered_map<std::string, ActivitySpec> snapshot_;
 
     std::unordered_map<std::string, UserState> states_;
+    bool icons_dirty_ = false;
+
+    std::mutex icons_mu_;
+    std::unordered_set<std::string> icons_in_use_;
 };
 
 }  // namespace relay

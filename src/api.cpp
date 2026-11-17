@@ -179,6 +179,14 @@ std::optional<PresenceUpdate> parse_presence(const std::string& body, std::strin
         }
         u.title_id = normalize_title_id(it->get_ref<const std::string&>());
     }
+
+    if (auto it = j.find("icon"); it != j.end() && !it->is_null()) {
+        if (!it->is_string() || !Icons::valid_sha256(it->get_ref<const std::string&>())) {
+            why = "icon must be 64 lowercase hex characters";
+            return std::nullopt;
+        }
+        u.icon = it->get<std::string>();
+    }
     return u;
 }
 
@@ -255,8 +263,27 @@ void handle_put_presence(Deps& d, const Request& req, Response& res) {
             std::cerr << "relay: recording activity failed: " << e.what() << '\n';
         }
     }
+    if (!update->icon) {
+        d.presence.put(user->discord_id, *update);
+        res.status = 204;
+        return;
+    }
+    bool need_icon = false;
+    if (d.icons.usable(*update->icon)) {
+        // Best effort, like the activity above.
+        try {
+            d.icons.touch(*update->icon);
+        } catch (const std::exception& e) {
+            std::cerr << "relay: recording icon use failed: " << e.what() << '\n';
+        }
+    } else if (d.db.is_blocked(*update->icon)) {
+        // Shown as if the console had sent no hash, and never asked for.
+        update->icon.reset();
+    } else {
+        need_icon = true;
+    }
     d.presence.put(user->discord_id, *update);
-    res.status = 204;
+    send_json(res, 200, json{{"need_icon", need_icon}});
 }
 
 void handle_clear_presence(Deps& d, const Request& req, Response& res) {
@@ -268,8 +295,9 @@ void handle_clear_presence(Deps& d, const Request& req, Response& res) {
 
 void handle_put_icon(Deps& d, const Request& req, Response& res) {
     const auto token = bearer_token(req);
+    std::optional<User> user;
     if (!is_admin(d, token)) {
-        auto user = user_for(d, token);
+        user = user_for(d, token);
         if (!user) return send_error(res, 401, "unauthorized", "Missing or invalid API key");
         if (rate_limited(d.icon_limiter, user->key_hash, res)) return;
     }
@@ -277,7 +305,16 @@ void handle_put_icon(Deps& d, const Request& req, Response& res) {
     if (!valid_title_id(tid)) return send_error(res, 400, "invalid_icon", "Invalid title id");
     auto out = d.icons.store(req.body);
     switch (out.result) {
-    case StoreResult::Stored: return send_json(res, 200, json{{"status", "stored"}});
+    case StoreResult::Stored:
+        // An upload counts as a use: a v0.3 console never sends the hash in its presence. Best
+        // effort: the file is stored.
+        try {
+            d.icons.touch(out.sha256);
+        } catch (const std::exception& e) {
+            std::cerr << "relay: recording icon use failed: " << e.what() << '\n';
+        }
+        if (user) d.presence.attach_icon(user->discord_id, normalize_title_id(tid), out.sha256);
+        return send_json(res, 200, json{{"status", "stored"}});
     case StoreResult::Invalid:
         return send_error(res, 400, "invalid_icon", "Icon must be a 256x256 JPEG for a valid title id");
     case StoreResult::TooLarge: return send_error(res, 413, "too_large", "Icon must be at most 131072 bytes");
@@ -290,19 +327,24 @@ void handle_put_icon(Deps& d, const Request& req, Response& res) {
 
 void handle_delete_icon(Deps& d, const Request& req, Response& res) {
     if (!is_admin(d, bearer_token(req))) return send_error(res, 401, "unauthorized", "Admin key required");
-    if (!d.icons.admin_delete(req.path_params.at("tid")))
-        return send_error(res, 404, "not_found", "No published icon for this title");
+    // The path is an icon hash, or the title id of a legacy icon.
+    const auto& target = req.path_params.at("tid");
+    const bool removed = Icons::valid_sha256(target) ? d.icons.remove_hash(target) : d.icons.admin_delete(target);
+    if (!removed) return send_error(res, 404, "not_found", "No icon to delete");
+    d.presence.icons_changed();
     res.status = 204;
 }
 
 void handle_get_icon(Deps& d, const Request& req, Response& res) {
-    std::optional<std::string> path = d.icons.published_path(req.matches[1].str());
+    const auto name = req.matches[1].str();
+    std::optional<std::string> path =
+        Icons::valid_sha256(name) ? d.icons.hash_path(name) : d.icons.published_path(name);
     std::string bytes;
     if (path) {
         std::ifstream f(*path, std::ios::binary);
         if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     }
-    if (bytes.empty()) return send_error(res, 404, "not_found", "No published icon for this title");
+    if (bytes.empty()) return send_error(res, 404, "not_found", "No such icon");
     res.status = 200;
     res.set_header("Cache-Control", "public, max-age=86400");
     res.set_content(std::move(bytes), "image/jpeg");

@@ -39,7 +39,7 @@ struct Fixture {
         db = Db::open(path.string());
         key.fill(5);
         presence = std::make_unique<Presence>(
-            backend, *db, key, "https://x.test", [](const std::string&) { return false; },
+            backend, *db, key, [](const std::optional<std::string>&, const std::optional<std::string>&) { return std::string("switch_logo"); },
             [this] { return now_ms; });
         refresher = std::make_unique<Refresher>(oauth, *db, key, *presence, [this] { return now_s; });
     }
@@ -66,7 +66,7 @@ struct Fixture {
         db->upsert_user(u);
     }
     void connect(const std::string& id) {
-        presence->put(id, PresenceUpdate{"Game", "Details", 10, std::nullopt});
+        presence->put(id, PresenceUpdate{"Game", "Details", 10, std::nullopt, std::nullopt});
         presence->tick();
         backend.reset();
     }

@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -117,9 +118,11 @@ struct Fixture {
                                         [this] { return now.load() / 1000; });
         links = std::make_unique<Links>(oauth, *db, cfg.token_key, now_ms);
         presence = std::make_unique<Presence>(
-            backend, *db, cfg.token_key, cfg.public_base_url,
-            [this](const std::string& tid) { return icons->published_path(tid).has_value(); }, now_ms);
-        icons->on_unpublished = [this](const std::string& tid) { presence->icon_published(tid); };
+            backend, *db, cfg.token_key,
+            [this](const std::optional<std::string>& tid, const std::optional<std::string>& icon) {
+                return presence_image(*icons, cfg.public_base_url, tid, icon);
+            },
+            now_ms);
         links->on_relinked = [this](const std::string& id) { presence->drop(id); };
         link_limiter = std::make_unique<RateLimiter>(10, 3'600'000, now_ms);
         poll_limiter = std::make_unique<RateLimiter>(720, 3'600'000, now_ms);
@@ -177,6 +180,16 @@ struct Fixture {
     }
     httplib::Result put_icon(const std::string& key, const std::string& tid, const std::string& body) {
         return cli->Put("/v1/icons/" + tid, bearer(key), body, "image/jpeg");
+    }
+    httplib::Result put_presence_icon(const std::string& key, const std::string& tid, const std::string& icon) {
+        return put_presence(key, json{{"name", "Zelda"}, {"title_id", tid}, {"icon", icon}}.dump());
+    }
+    // The image shown once the presence has been sent: ticks past the 5 s send interval.
+    std::string shown_image(const std::string& discord_id = "42") {
+        now += 5000;
+        presence->tick();
+        auto cur = presence->current(discord_id);
+        return cur ? cur->large_image : std::string("<none>");
     }
     // A title icon published before v0.4.0 (no route publishes one any more): its row and file.
     void publish_legacy(const std::string& tid, const std::string& jpeg) {
@@ -522,7 +535,7 @@ TEST_CASE("api: an icon upload is stored under the hash of its bytes") {
     check_error(f.cli->Get(std::string("/icons/") + kTid + ".jpg"), 404, "not_found");
 }
 
-TEST_CASE("api: a legacy published icon is still served") {
+TEST_CASE("api: get_icon_by_title_serves_legacy") {
     Fixture f;
     f.publish_legacy(kTid, make_jpeg(256, 256, 1));
     auto icon = f.cli->Get(std::string("/icons/") + kTid + ".jpg");
@@ -539,12 +552,166 @@ TEST_CASE("api: a legacy published icon is still served") {
     CHECK(lower->status == 200);
 }
 
-TEST_CASE("api: an upload beyond the storage cap gives 503") {
+TEST_CASE("api: icon_upload_over_cap_answers_503") {
     Fixture f(false, true, 1);
     auto key = f.link();
     REQUIRE(f.put_icon(key, kTid, make_jpeg(256, 256, 1))->status == 200);
-    check_error(f.put_icon(key, kTid, make_jpeg(256, 256, 2)), 503, "storage_full");
+    const auto second = make_jpeg(256, 256, 2);
+    auto r = f.put_presence_icon(key, kTid, sha256_hex(second));
+    REQUIRE(r);
+    CHECK(body_of(r) == json{{"need_icon", true}});
+    check_error(f.put_icon(key, kTid, second), 503, "storage_full");
+    CHECK(f.shown_image() == "switch_logo");
     CHECK(f.put_icon(key, kTid, make_jpeg(256, 256, 1))->status == 200);
+}
+
+TEST_CASE("api: presence_without_icon_answers_204") {
+    Fixture f;
+    auto key = f.link();
+    auto r = f.put_presence(key, std::string(R"({"name":"Zelda","title_id":")") + kTid + "\"}");
+    REQUIRE(r);
+    CHECK(r->status == 204);
+    CHECK(r->body.empty());
+}
+
+TEST_CASE("api: presence_with_unknown_icon_answers_need_icon_true") {
+    Fixture f;
+    auto key = f.link();
+    auto r = f.put_presence_icon(key, kTid, sha256_hex(make_jpeg(256, 256, 1)));
+    REQUIRE(r);
+    CHECK(r->status == 200);
+    CHECK(r->get_header_value("Content-Type") == "application/json");
+    CHECK(body_of(r) == json{{"need_icon", true}});
+    CHECK(f.shown_image() == "switch_logo");
+}
+
+TEST_CASE("api: presence_with_stored_icon_answers_need_icon_false") {
+    Fixture f;
+    auto key = f.link();
+    const auto jpg = make_jpeg(256, 256, 1);
+    const auto sha = sha256_hex(jpg);
+    REQUIRE(f.put_icon(f.link("43", "bob"), kTid, jpg)->status == 200);
+    auto r = f.put_presence_icon(key, kTid, sha);
+    REQUIRE(r);
+    CHECK(r->status == 200);
+    CHECK(r->get_header_value("Content-Type") == "application/json");
+    CHECK(body_of(r) == json{{"need_icon", false}});
+    CHECK(f.shown_image() == "https://x.test/icons/" + sha + ".jpg");
+    CHECK(f.presence->icons_in_use() == std::unordered_set<std::string>{sha});
+}
+
+TEST_CASE("api: blocked_hash_in_presence_shows_logo") {
+    Fixture f;
+    auto key = f.link();
+    const auto jpg = make_jpeg(256, 256, 1);
+    const auto sha = sha256_hex(jpg);
+    REQUIRE(f.put_icon(key, kTid, jpg)->status == 200);
+    REQUIRE(f.cli->Delete("/v1/icons/" + sha, bearer(kAdminKey))->status == 204);
+    auto r = f.put_presence_icon(key, kTid, sha);
+    REQUIRE(r);
+    CHECK(r->status == 200);
+    CHECK(body_of(r) == json{{"need_icon", false}});
+    CHECK(f.shown_image() == "switch_logo");
+    CHECK(f.presence->icons_in_use().empty());
+}
+
+TEST_CASE("api: presence_with_bad_icon_is_invalid_body") {
+    Fixture f;
+    auto key = f.link();
+    std::string upper = sha256_hex("x");
+    for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    REQUIRE(upper != sha256_hex("x"));
+    check_error(f.put_presence_icon(key, kTid, std::string(63, 'a')), 400, "invalid_body");
+    check_error(f.put_presence_icon(key, kTid, std::string(65, 'a')), 400, "invalid_body");
+    check_error(f.put_presence_icon(key, kTid, upper), 400, "invalid_body");
+    check_error(f.put_presence(key, R"({"name":"Zelda","icon":42})"), 400, "invalid_body");
+    f.presence->tick();
+    CHECK(f.backend.calls(Kind::Set).empty());
+}
+
+TEST_CASE("api: v03_upload_attaches_to_current_presence") {
+    Fixture f;
+    auto key = f.link();
+    const auto jpg = make_jpeg(256, 256, 1);
+    const auto url = "https://x.test/icons/" + sha256_hex(jpg) + ".jpg";
+    const std::string body = std::string(R"({"name":"Zelda","title_id":")") + kTid + "\"}";
+    REQUIRE(f.put_presence(key, body)->status == 204);
+    f.presence->tick();
+    REQUIRE(f.presence->current("42")->large_image == "switch_logo");
+    auto up = f.put_icon(key, "0100a0d02127e000", jpg);
+    REQUIRE(up);
+    CHECK(up->status == 200);
+    CHECK(body_of(up) == json{{"status", "stored"}});
+    CHECK(f.shown_image() == url);
+    // The next v0.3 heartbeat carries no icon and keeps the attached one.
+    REQUIRE(f.put_presence(key, body)->status == 204);
+    CHECK(f.shown_image() == url);
+}
+
+TEST_CASE("api: an upload for another title or by the admin attaches nothing") {
+    Fixture f;
+    auto key = f.link();
+    REQUIRE(f.put_presence(key, R"({"name":"Mario","title_id":"0100000000010000"})")->status == 204);
+    f.presence->tick();
+    REQUIRE(f.put_icon(key, kTid, make_jpeg(256, 256, 1))->status == 200);
+    CHECK(f.shown_image() == "switch_logo");
+    REQUIRE(f.put_icon(kAdminKey, "0100000000010000", make_jpeg(256, 256, 2))->status == 200);
+    CHECK(f.shown_image() == "switch_logo");
+}
+
+TEST_CASE("api: admin_delete_by_hash_blocks_and_falls_back") {
+    Fixture f;
+    auto key = f.link();
+    f.publish_legacy(kTid, make_jpeg(256, 256, 3));
+    const auto jpg = make_jpeg(256, 256, 1);
+    const auto sha = sha256_hex(jpg);
+    REQUIRE(f.put_icon(key, kTid, jpg)->status == 200);
+    REQUIRE(f.put_presence_icon(key, kTid, sha)->status == 200);
+    REQUIRE(f.shown_image() == "https://x.test/icons/" + sha + ".jpg");
+
+    check_error(f.cli->Delete("/v1/icons/" + sha, bearer(key)), 401, "unauthorized");
+    auto del = f.cli->Delete("/v1/icons/" + sha, bearer(kAdminKey));
+    REQUIRE(del);
+    CHECK(del->status == 204);
+    CHECK(f.shown_image() == std::string("https://x.test/icons/") + kTid + ".jpg");
+    check_error(f.cli->Get("/icons/" + sha + ".jpg"), 404, "not_found");
+    CHECK_FALSE(fs::exists(f.root / "icons" / "h" / (sha + ".jpg")));
+    check_error(f.cli->Delete("/v1/icons/" + sha, bearer(kAdminKey)), 404, "not_found");
+    check_error(f.put_icon(key, kTid, jpg), 400, "blocked");
+    // Neither a hash nor a title id.
+    check_error(f.cli->Delete("/v1/icons/nothing", bearer(kAdminKey)), 404, "not_found");
+}
+
+TEST_CASE("api: deleting a hash also hides a legacy title icon with the same bytes") {
+    Fixture f;
+    auto key = f.link();
+    const auto jpg = make_jpeg(256, 256, 2);
+    f.publish_legacy(kTid, jpg);
+    REQUIRE(f.put_presence(key, std::string(R"({"name":"Zelda","title_id":")") + kTid + "\"}")->status == 204);
+    REQUIRE(f.shown_image() == std::string("https://x.test/icons/") + kTid + ".jpg");
+    REQUIRE(f.cli->Delete("/v1/icons/" + sha256_hex(jpg), bearer(kAdminKey))->status == 204);
+    check_error(f.cli->Get(std::string("/icons/") + kTid + ".jpg"), 404, "not_found");
+    CHECK(f.shown_image() == "switch_logo");
+}
+
+TEST_CASE("api: get_icon_by_hash_serves_jpeg") {
+    Fixture f;
+    auto key = f.link();
+    const auto jpg = make_jpeg(256, 256, 1);
+    const auto sha = sha256_hex(jpg);
+    check_error(f.cli->Get("/icons/" + sha + ".jpg"), 404, "not_found");
+    REQUIRE(f.put_icon(key, kTid, jpg)->status == 200);
+    auto r = f.cli->Get("/icons/" + sha + ".jpg");
+    REQUIRE(r);
+    CHECK(r->status == 200);
+    CHECK(r->get_header_value("Content-Type") == "image/jpeg");
+    CHECK(r->get_header_value("Cache-Control") == "public, max-age=86400");
+    REQUIRE(r->body.size() > 2);
+    CHECK(static_cast<unsigned char>(r->body[0]) == 0xFF);
+    CHECK(static_cast<unsigned char>(r->body[1]) == 0xD8);
+    std::string upper = sha;
+    for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    check_error(f.cli->Get("/icons/" + upper + ".jpg"), 404, "not_found");
 }
 
 TEST_CASE("api: malicious icon uploads are refused") {

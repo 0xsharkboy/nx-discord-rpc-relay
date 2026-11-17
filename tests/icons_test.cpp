@@ -361,20 +361,44 @@ TEST_CASE("icons: legacy published_path requires row and file") {
     CHECK_FALSE(e.icons->published_path("bad"));
 }
 
-TEST_CASE("icons: legacy admin_delete blocks the hash and fires on_unpublished outside the lock") {
+TEST_CASE("icons: legacy admin_delete blocks the hash") {
     Env e;
-    std::vector<std::string> fired;
-    e.icons->on_unpublished = [&](const std::string& t) {
-        fired.push_back(t);
-        CHECK_FALSE(e.icons->published_path(t));
-    };
     CHECK_FALSE(e.icons->admin_delete(TID));
-    CHECK(fired.empty());
     e.seed_legacy(TID, "H1");
     auto path = *e.icons->published_path(TID);
     CHECK(e.icons->admin_delete("0100a0d02127e000"));
-    CHECK(fired == std::vector<std::string>{TID});
+    CHECK_FALSE(e.icons->published_path(TID));
     CHECK_FALSE(fs::exists(path));
     CHECK(e.db->is_blocked("H1"));
     CHECK_FALSE(e.icons->admin_delete(TID));
+}
+
+TEST_CASE("icons: a legacy title icon whose hash is blocked is not served") {
+    Env e;
+    const std::string sha(64, 'a');
+    e.seed_legacy(TID, sha);
+    REQUIRE(e.icons->published_path(TID));
+    CHECK(e.icons->remove_hash(sha));
+    CHECK_FALSE(e.icons->published_path(TID));
+    CHECK(presence_image(*e.icons, "https://x.test", std::string(TID), std::nullopt) == "switch_logo");
+}
+
+TEST_CASE("icons: presence_image prefers a usable hash, then the legacy title icon, then the logo") {
+    Env e;
+    const auto jpg = make_jpeg(256, 256, 1);
+    const auto sha = sha256_hex(jpg);
+    const std::optional<std::string> tid = std::string(TID);
+    const std::optional<std::string> none;
+    CHECK(presence_image(*e.icons, "https://x.test", none, none) == "switch_logo");
+    CHECK(presence_image(*e.icons, "https://x.test", tid, sha) == "switch_logo");
+    e.seed_legacy(TID, std::string(64, 'b'));
+    const std::string legacy = std::string("https://x.test/icons/") + TID + ".jpg";
+    CHECK(presence_image(*e.icons, "https://x.test", tid, none) == legacy);
+    CHECK(presence_image(*e.icons, "https://x.test", tid, sha) == legacy);
+    REQUIRE(e.icons->store(jpg).result == StoreResult::Stored);
+    const std::string hashed = "https://x.test/icons/" + sha + ".jpg";
+    CHECK(presence_image(*e.icons, "https://x.test", tid, sha) == hashed);
+    CHECK(presence_image(*e.icons, "https://x.test", none, sha) == hashed);
+    e.icons->remove_hash(sha);
+    CHECK(presence_image(*e.icons, "https://x.test", tid, sha) == legacy);
 }

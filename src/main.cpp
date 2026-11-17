@@ -102,8 +102,7 @@ void background_jobs(Refresher& refresher, Icons& icons, Links& links, Presence&
         }
         if (now >= next_expiry) {
             try {
-                // No presence carries a hash yet: nothing is in use.
-                const auto removed = icons.cleanup({});
+                const auto removed = icons.cleanup(presence.icons_in_use());
                 if (removed != 0) std::cout << "relay: removed " << removed << " unused icon(s)" << std::endl;
             } catch (const std::exception& e) {
                 std::cerr << "relay: icon cleanup failed: " << e.what() << '\n';
@@ -180,9 +179,11 @@ int main() {
     DiscordOAuth oauth(cfg);
     Icons icons(*db, icons_dir.string(), kDefaultMaxIconFiles, unix_s);
     Presence presence(
-        backend, *db, cfg.token_key, cfg.public_base_url,
-        [&icons](const std::string& tid) { return icons.published_path(tid).has_value(); }, unix_ms);
-    icons.on_unpublished = [&presence](const std::string& tid) { presence.icon_published(tid); };
+        backend, *db, cfg.token_key,
+        [&icons, &cfg](const std::optional<std::string>& tid, const std::optional<std::string>& icon) {
+            return presence_image(icons, cfg.public_base_url, tid, icon);
+        },
+        unix_ms);
     Links links(oauth, *db, cfg.token_key, unix_ms);
     links.on_relinked = [&presence](const std::string& id) { presence.drop(id); };
     Refresher refresher(oauth, *db, cfg.token_key, presence, unix_s);

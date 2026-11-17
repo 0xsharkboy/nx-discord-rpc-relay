@@ -14,7 +14,7 @@ struct Config {
     std::string client_id, client_secret, public_base_url, listen_host, data_dir;
     std::array<uint8_t, 32> token_key{};
     std::optional<std::string> admin_key;
-    int listen_port = 8080, publish_threshold = 2;
+    int listen_port = 8080;
     bool trust_proxy = false;
 };
 

@@ -65,7 +65,6 @@ TEST_CASE("load_config applies defaults") {
     CHECK(c.public_base_url == "https://rpc.example.dev");
     CHECK(c.listen_host == "0.0.0.0");
     CHECK(c.listen_port == 8080);
-    CHECK(c.publish_threshold == 2);
     CHECK(c.data_dir == "/data");
     CHECK_FALSE(c.trust_proxy);
     CHECK_FALSE(c.admin_key.has_value());
@@ -77,7 +76,6 @@ TEST_CASE("load_config reads overrides") {
     auto env = full();
     env["LISTEN_ADDR"] = "127.0.0.1:9000";
     env["DATA_DIR"] = "/tmp/x";
-    env["PUBLISH_THRESHOLD"] = "5";
     env["TRUST_PROXY"] = "true";
     env["ADMIN_KEY"] = "adm";
     auto r = load(env);
@@ -86,7 +84,6 @@ TEST_CASE("load_config reads overrides") {
     CHECK(c.listen_host == "127.0.0.1");
     CHECK(c.listen_port == 9000);
     CHECK(c.data_dir == "/tmp/x");
-    CHECK(c.publish_threshold == 5);
     CHECK(c.trust_proxy);
     CHECK(c.admin_key == "adm");
 }
@@ -145,11 +142,11 @@ TEST_CASE("load_config rejects a bad LISTEN_ADDR") {
     CHECK(std::holds_alternative<Config>(load(env)));
 }
 
-TEST_CASE("load_config rejects a bad PUBLISH_THRESHOLD") {
-    for (auto v : {"0", "-1", "abc", "2.5", "", "99999999999"}) {
+TEST_CASE("load_config: publish_threshold_is_ignored") {
+    for (auto v : {"2", "x", "0", ""}) {
         auto env = full();
         env["PUBLISH_THRESHOLD"] = v;
-        CHECK_MESSAGE(has(error_of(env), "PUBLISH_THRESHOLD"), v);
+        CHECK_MESSAGE(std::holds_alternative<Config>(load(env)), v);
     }
 }
 
@@ -163,7 +160,6 @@ TEST_CASE("load_config errors never contain secret values") {
     auto env = full();
     env["ADMIN_KEY"] = "super-admin-secret";
     env["PUBLIC_BASE_URL"] = "http://bad";
-    env["PUBLISH_THRESHOLD"] = "0";
     auto e = error_of(env);
     CHECK_FALSE(has(e, "s3cr3t-client-value"));
     CHECK_FALSE(has(e, "super-admin-secret"));

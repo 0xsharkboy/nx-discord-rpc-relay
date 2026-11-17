@@ -26,7 +26,9 @@ struct Fixture {
     std::array<uint8_t, 32> key{};
     int64_t now = 1'700'000'000'000;
     std::set<std::string> published;
-    // Stands in for a Db error inside Icons::published_path.
+    // Hashes with a stored, unblocked file.
+    std::set<std::string> usable;
+    // Stands in for a Db error inside the icon lookup.
     bool icon_lookup_fails = false;
     std::unique_ptr<Presence> presence;
 
@@ -39,10 +41,12 @@ struct Fixture {
         add_user("42", "access-42");
         add_user("43", "access-43");
         presence = std::make_unique<Presence>(
-            backend, *db, key, "https://x.test",
-            [this](const std::string& tid) {
+            backend, *db, key,
+            [this](const std::optional<std::string>& tid, const std::optional<std::string>& icon) -> std::string {
                 if (icon_lookup_fails) throw std::runtime_error("sqlite: no such table: published_icons");
-                return published.count(tid) > 0;
+                if (icon && usable.count(*icon)) return "https://x.test/icons/" + *icon + ".jpg";
+                if (tid && published.count(*tid)) return "https://x.test/icons/" + *tid + ".jpg";
+                return "switch_logo";
             }, [this] { return now; });
     }
     ~Fixture() {
@@ -62,7 +66,10 @@ struct Fixture {
     }
     void put(const std::string& id, const std::string& name, std::optional<int64_t> elapsed = 30,
              std::optional<std::string> tid = std::string(kTid), const std::string& details = "Chapter 1") {
-        presence->put(id, PresenceUpdate{name, details, elapsed, tid});
+        presence->put(id, PresenceUpdate{name, details, elapsed, tid, std::nullopt});
+    }
+    void put_icon(const std::string& id, const std::string& tid, const std::string& icon) {
+        presence->put(id, PresenceUpdate{"Zelda", "Chapter 1", 30, tid, icon});
     }
     void advance(int64_t ms) {
         now += ms;
@@ -224,7 +231,7 @@ TEST_CASE("presence: a put within 60 s of a clear reuses the client") {
     CHECK(calls[0].spec->name == "Mario");
 }
 
-TEST_CASE("presence: icon_published re-sends to users showing that title only") {
+TEST_CASE("presence: icons_changed re-sends to users whose image changed only") {
     Fixture f;
     f.put("42", "Zelda", 30, std::string(kTid));
     f.put("43", "Mario", 30, std::string("0100000000010000"));
@@ -232,13 +239,106 @@ TEST_CASE("presence: icon_published re-sends to users showing that title only") 
     f.backend.reset();
     f.now += 5000;
     f.published.insert(kTid);
-    f.presence->icon_published("0100a0d02127e000");
+    f.presence->icons_changed();
     f.presence->tick();
     auto sets = f.backend.calls(Kind::Set);
     REQUIRE(sets.size() == 1);
     CHECK(sets[0].discord_id == "42");
     CHECK(sets[0].spec->large_image == kIconUrl);
     CHECK(sets[0].spec->name == "Zelda");
+    CHECK(f.presence->current("42")->large_image == kIconUrl);
+}
+
+namespace {
+const std::string kHashA(64, 'a');
+const std::string kHashB(64, 'b');
+const std::string kHashAUrl = "https://x.test/icons/" + kHashA + ".jpg";
+}  // namespace
+
+TEST_CASE("presence: put_with_usable_icon_shows_hash_url") {
+    Fixture f;
+    f.usable.insert(kHashA);
+    f.published.insert(kTid);
+    f.put_icon("42", kTid, kHashA);
+    f.presence->tick();
+    auto sets = f.backend.calls(Kind::Set);
+    REQUIRE(sets.size() == 1);
+    CHECK(sets[0].spec->large_image == kHashAUrl);
+}
+
+TEST_CASE("presence: attach_icon_for_current_title_updates_image") {
+    Fixture f;
+    f.put("42", "Zelda", 30, std::string(kTid));
+    f.presence->tick();
+    REQUIRE(f.presence->current("42")->large_image == "switch_logo");
+    f.usable.insert(kHashA);
+    f.presence->attach_icon("42", "0100a0d02127e000", kHashA);
+    f.advance(5000);
+    CHECK(f.presence->current("42")->large_image == kHashAUrl);
+    // A heartbeat of the same title without an icon keeps the attached one.
+    f.put("42", "Zelda", 30, std::string(kTid));
+    f.advance(5000);
+    CHECK(f.presence->current("42")->large_image == kHashAUrl);
+    // An attach for a user without a presence creates nothing.
+    f.presence->attach_icon("43", kTid, kHashA);
+    f.advance(5000);
+    CHECK_FALSE(f.presence->current("43"));
+    CHECK(f.backend.calls(Kind::Connect, "43").empty());
+}
+
+TEST_CASE("presence: upload_for_other_title_is_store_only") {
+    Fixture f;
+    f.put("42", "Mario", 30, std::string("0100000000010000"));
+    f.presence->tick();
+    f.usable.insert(kHashA);
+    f.presence->attach_icon("42", kTid, kHashA);
+    f.advance(5000);
+    CHECK(f.presence->current("42")->large_image == "switch_logo");
+    CHECK(f.presence->icons_in_use().empty());
+}
+
+TEST_CASE("presence: title_change_drops_previous_icon") {
+    Fixture f;
+    f.usable.insert(kHashA);
+    f.put_icon("42", kTid, kHashA);
+    f.presence->tick();
+    REQUIRE(f.presence->current("42")->large_image == kHashAUrl);
+    f.put("42", "Mario", 30, std::string("0100000000010000"));
+    f.advance(5000);
+    CHECK(f.presence->current("42")->large_image == "switch_logo");
+    CHECK(f.presence->icons_in_use().empty());
+    // A title change that carries its own icon keeps that one.
+    f.usable.insert(kHashB);
+    f.put_icon("42", kTid, kHashB);
+    f.advance(5000);
+    CHECK(f.presence->current("42")->large_image == "https://x.test/icons/" + kHashB + ".jpg");
+}
+
+TEST_CASE("presence: icons_in_use_lists_current_hashes") {
+    Fixture f;
+    f.usable.insert(kHashA);
+    f.put_icon("42", kTid, kHashA);
+    f.put_icon("43", "0100000000010000", kHashB);
+    CHECK(f.presence->icons_in_use().empty());
+    f.presence->tick();
+    CHECK(f.presence->icons_in_use() == std::unordered_set<std::string>{kHashA, kHashB});
+    f.presence->drop("43");
+    f.presence->tick();
+    CHECK(f.presence->icons_in_use() == std::unordered_set<std::string>{kHashA});
+    f.presence->disconnect_all();
+    CHECK(f.presence->icons_in_use().empty());
+}
+
+TEST_CASE("presence: a hash blocked after the put falls back on icons_changed") {
+    Fixture f;
+    f.usable.insert(kHashA);
+    f.published.insert(kTid);
+    f.put_icon("42", kTid, kHashA);
+    f.presence->tick();
+    REQUIRE(f.presence->current("42")->large_image == kHashAUrl);
+    f.usable.erase(kHashA);
+    f.presence->icons_changed();
+    f.advance(5000);
     CHECK(f.presence->current("42")->large_image == kIconUrl);
 }
 

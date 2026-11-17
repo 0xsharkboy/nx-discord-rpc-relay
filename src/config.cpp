@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <iostream>
 #include <string_view>
 #include <vector>
 
@@ -74,13 +75,8 @@ std::variant<Config, std::string> load_config(
         }
     }
 
-    if (auto v = get("PUBLISH_THRESHOLD")) {
-        auto n = parse_int(*v, 1, 1'000'000);
-        if (!n) invalid.emplace_back("PUBLISH_THRESHOLD must be an integer >= 1");
-        else c.publish_threshold = *n;
-    } else if (getenv("PUBLISH_THRESHOLD")) {
-        invalid.emplace_back("PUBLISH_THRESHOLD must be an integer >= 1");
-    }
+    // Icons are no longer published by vote; an old env file keeps working.
+    if (getenv("PUBLISH_THRESHOLD")) std::cerr << "relay: PUBLISH_THRESHOLD is no longer used and is ignored\n";
 
     if (auto v = get("TRUST_PROXY")) {
         if (*v == "true" || *v == "1") c.trust_proxy = true;
