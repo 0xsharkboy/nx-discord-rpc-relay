@@ -271,7 +271,8 @@ Auth: admin key. Blocks the image with this hash, so the same bytes cannot be st
 deletes its file. Presences that showed it switch to the Switch logo. No body.
 
 **204**, no body. Errors: `401 unauthorized` (missing or non-admin key), `404 not_found` (the hash
-is unknown and already blocked, or is not a valid hash).
+is unknown and already blocked, or the title id has no legacy icon). A path that is not a valid hash is
+treated as a title id.
 
 `DELETE /v1/icons/{title_id}` still works for an icon published before v0.4.0 (see
 [Legacy title icons](#legacy-title-icons)): it unpublishes that icon and blocks its image. A path
@@ -302,7 +303,8 @@ A console that sends `icon` follows these rules:
   minutes per title.
 - After a network error or a `5xx` (including `503 storage_full`), retry after 1, 5 and 15 minutes,
   then every 15 minutes.
-- After a `400` (`invalid_icon` or `blocked`), stop uploading for the session.
+- After a `400` (`invalid_icon` or `blocked`) or a `413` (`too_large`), stop uploading that title for the
+  session.
 - When a presence with `icon` gets `204`, the relay is older than v0.4.0 and does not use hashes:
   upload the icon once per title per session, as before.
 

@@ -86,7 +86,7 @@ and fill it in, in the directory holding `compose.yml`. Keep `relay.env` readabl
 | `DISCORD_CLIENT_SECRET` | yes | The application's client secret |
 | `TOKEN_ENC_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Encrypts the stored Discord tokens |
 | `PUBLIC_BASE_URL` | yes | The relay's public URL, `https://`, no trailing slash. Icons are served from it |
-| `ADMIN_KEY` | no | Admin key for icon moderation (`PUT /v1/icons/{title_id}` and `DELETE /v1/icons/{hash}`, see [protocol.md](protocol.md)) |
+| `ADMIN_KEY` | no | Admin key for icon moderation (`DELETE /v1/icons/{hash or title_id}`) and for icon uploads without a rate limit, see [protocol.md](protocol.md) |
 | `TRUST_PROXY` | no | `true` to key the rate limits on the first `X-Forwarded-For` hop, default `false` (the example sets `true`) |
 | `LISTEN_ADDR` | no | `host:port` to listen on inside the container, default `0.0.0.0:8080` |
 | `DATA_DIR` | no | Data directory inside the container, default `/data` |
