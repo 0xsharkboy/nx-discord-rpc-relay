@@ -209,6 +209,11 @@ struct Fixture {
 
 }  // namespace
 
+TEST_CASE("api: the listen backlog is 1024, not cpp-httplib's 5") {
+    // A burst of reconnecting consoles must not overflow the accept queue (bench/REPORT.md).
+    CHECK(CPPHTTPLIB_LISTEN_BACKLOG == 1024);
+}
+
 TEST_CASE("api: healthz") {
     Fixture f;
     auto r = f.cli->Get("/healthz");

@@ -623,3 +623,177 @@ TEST_CASE("presence: sdk_reads_do_not_wait_for_writer") {
     CHECK(calls[0].token == "access-42");
     CHECK(calls[1].kind == Kind::Set);
 }
+
+TEST_CASE("presence: tick_skips_idle_users") {
+    Fixture f;
+    for (int i = 0; i < 50; ++i) {
+        f.add_user("idle" + std::to_string(i), "access");
+        f.put("idle" + std::to_string(i), "Zelda");
+    }
+    f.presence->tick();
+    // Settled: every user is shown and nothing is due before the 150 s idle clear.
+    const auto settled = f.presence->step_count();
+    for (int i = 0; i < 1000; ++i) f.advance(10);
+    CHECK(f.presence->step_count() == settled);
+    // A command steps its user only.
+    f.put("idle7", "Mario");
+    f.advance(5000);
+    CHECK(f.presence->step_count() == settled + 1);
+    CHECK(f.presence->current("idle7")->name == "Mario");
+}
+
+TEST_CASE("presence: idle_user_timeout_still_fires") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.presence->tick();
+    f.backend.reset();
+    const auto start = f.presence->step_count();
+    for (int i = 0; i < 149; ++i) f.advance(1000);
+    f.advance(999);
+    CHECK(f.backend.calls().empty());
+    CHECK(f.presence->current("42"));
+    f.advance(1);
+    auto calls = f.backend.calls();
+    REQUIRE(calls.size() == 1);
+    CHECK(calls[0].kind == Kind::Clear);
+    CHECK_FALSE(f.presence->current("42"));
+    for (int i = 0; i < 59; ++i) f.advance(1000);
+    f.advance(999);
+    CHECK(f.backend.calls().size() == 1);
+    f.advance(1);
+    calls = f.backend.calls();
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[1].kind == Kind::Disconnect);
+    // Only the clear and the disconnect were stepped, not every one of the 210 ticks.
+    CHECK(f.presence->step_count() - start == 2);
+}
+
+TEST_CASE("presence: reconnect_pace_respected") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.presence->tick();
+    f.backend.reset();
+    f.now += 1000;
+    f.backend.lose("42", false);
+    f.backend.reset();
+    const auto start = f.presence->step_count();
+    // No put: the lost client comes back on its own, 30 s after the last connect.
+    for (int i = 0; i < 28; ++i) f.advance(1000);
+    f.advance(999);
+    CHECK(f.backend.calls().empty());
+    CHECK_FALSE(f.presence->current("42"));
+    f.advance(1);
+    auto calls = f.backend.calls();
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[0].kind == Kind::Connect);
+    CHECK(calls[1].kind == Kind::Set);
+    CHECK(f.presence->current("42")->name == "Zelda");
+    // The loss and the reconnect.
+    CHECK(f.presence->step_count() - start == 2);
+}
+
+TEST_CASE("presence: a loss long after the last connect reconnects at the next tick") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.presence->tick();
+    f.now += 40000;
+    f.backend.reset();
+    f.backend.lose("42", false);
+    f.backend.reset();
+    f.advance(10);
+    auto calls = f.backend.calls();
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[0].kind == Kind::Connect);
+    CHECK(calls[1].kind == Kind::Set);
+}
+
+TEST_CASE("presence: an expired token is retried 30 s later without any command") {
+    Fixture f;
+    f.db->update_tokens("42", "hash42", seal(f.key, "access-42"), seal(f.key, "refresh-42"), f.now / 1000);
+    f.put("42", "Zelda");
+    f.presence->tick();
+    // The refresher stores a fresh token; it sends no command for a client that is not connected.
+    f.db->update_tokens("42", "hash42", seal(f.key, "access-42-new"), seal(f.key, "refresh-42-new"), 1'900'000'000);
+    const auto start = f.presence->step_count();
+    for (int i = 0; i < 29; ++i) f.advance(1000);
+    f.advance(999);
+    CHECK(f.backend.calls().empty());
+    f.advance(1);
+    auto calls = f.backend.calls();
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[0].kind == Kind::Connect);
+    CHECK(calls[0].token == "access-42-new");
+    CHECK(f.presence->step_count() - start == 1);
+}
+
+TEST_CASE("presence: a change held by the 5 s limit is sent on time without any command") {
+    Fixture f;
+    f.put("42", "A");
+    f.presence->tick();
+    f.backend.reset();
+    f.now += 1000;
+    f.put("42", "B");
+    f.presence->tick();
+    const auto start = f.presence->step_count();
+    for (int i = 0; i < 3; ++i) f.advance(1000);
+    f.advance(999);
+    CHECK(f.backend.calls().empty());
+    f.advance(1);
+    auto sets = f.backend.calls(Kind::Set);
+    REQUIRE(sets.size() == 1);
+    CHECK(sets[0].spec->name == "B");
+    CHECK(f.presence->step_count() - start == 1);
+}
+
+TEST_CASE("presence: a cleared user that loses its client is forgotten without any command") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.presence->tick();
+    f.presence->clear("42");
+    f.presence->tick();
+    f.backend.reset();
+    f.backend.lose("42", false);
+    f.advance(10);
+    // Forgotten: a later put connects again rather than reusing a client.
+    f.backend.reset();
+    f.put("42", "Mario");
+    f.advance(10);
+    CHECK(f.backend.calls(Kind::Connect, "42").size() == 1);
+}
+
+TEST_CASE("presence: icons_changed steps only users whose image changed") {
+    Fixture f;
+    for (int i = 0; i < 20; ++i) {
+        f.add_user("u" + std::to_string(i), "access");
+        f.put("u" + std::to_string(i), "Zelda", 30, std::string("0100000000001000"));
+    }
+    f.put("42", "Zelda");
+    f.presence->tick();
+    f.backend.reset();
+    const auto start = f.presence->step_count();
+    f.published.insert(kTid);
+    f.presence->icons_changed();
+    f.advance(5000);
+    auto sets = f.backend.calls(Kind::Set);
+    REQUIRE(sets.size() == 1);
+    CHECK(sets[0].discord_id == "42");
+    CHECK(sets[0].spec->large_image == kIconUrl);
+    CHECK(f.presence->step_count() - start == 1);
+}
+
+TEST_CASE("presence: a failing step does not stop the others and is retried at the next tick") {
+    Fixture f;
+    f.backend.throw_on_set_for = "42";
+    f.put("42", "Zelda");
+    f.put("43", "Mario");
+    CHECK_NOTHROW(f.presence->tick());
+    CHECK(f.presence->current("43")->name == "Mario");
+    CHECK_FALSE(f.presence->current("42"));
+    CHECK(f.backend.run_callbacks_count() == 1);
+    // No new command: the failed user is stepped again on its own.
+    f.backend.throw_on_set_for.clear();
+    f.advance(10);
+    auto sets = f.backend.calls(Kind::Set, "42");
+    REQUIRE(sets.size() == 1);
+    CHECK(f.presence->current("42")->name == "Zelda");
+}

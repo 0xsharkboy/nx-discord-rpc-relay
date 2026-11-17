@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "presence.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -98,16 +99,36 @@ void Presence::tick() {
             std::cerr << "relay: presence command for " << c.key << " failed: " << e.what() << '\n';
         }
     }
-    for (auto it = states_.begin(); it != states_.end();) {
-        if (step(it->first, it->second, now)) {
-            ++it;
-        } else {
-            publish(it->first, std::nullopt);
-            if (it->second.icon) icons_dirty_ = true;
-            it = states_.erase(it);
+    // Collected before any step, so a due time at or before now is stepped once, not in a loop.
+    while (!schedule_.empty() && schedule_.begin()->first <= now) {
+        dirty_.insert(std::move(schedule_.extract(schedule_.begin()).value().second));
+    }
+    std::vector<std::string> ids(dirty_.begin(), dirty_.end());
+    dirty_.clear();
+    for (const auto& id : ids) {
+        auto it = states_.find(id);
+        if (it == states_.end()) continue;
+        auto& st = it->second;
+        // Its entry, if any, was taken above or is replaced below.
+        unschedule(id, st);
+        try {
+            if (step(id, st, now)) {
+                reschedule(id, st);
+            } else {
+                publish(id, std::nullopt);
+                if (st.icon) icons_dirty_ = true;
+                states_.erase(it);
+            }
+        } catch (const std::exception& e) {
+            // Retried at the next tick, as when every user was stepped on every tick.
+            dirty_.insert(id);
+            std::cerr << "relay: presence step for " << id << " failed: " << e.what() << '\n';
+        } catch (...) {
+            dirty_.insert(id);
+            std::cerr << "relay: presence step for " << id << " failed\n";
         }
     }
-    // Last, so that connection_lost never runs while states_ is being iterated.
+    // Last, so that connection_lost never runs while a user is being stepped.
     backend_.run_callbacks();
     sync_icons();
 }
@@ -118,14 +139,19 @@ void Presence::clear_all() {
         queue_.clear();
     }
     const int64_t now = now_ms_();
-    for (auto& [id, st] : states_)
-        if (!st.cleared_at_ms) clear_user(id, st, now);
+    for (auto& [id, st] : states_) {
+        if (st.cleared_at_ms) continue;
+        clear_user(id, st, now);
+        dirty_.insert(id);
+    }
 }
 
 void Presence::disconnect_all() {
     for (auto& [id, st] : states_)
         if (st.connected) backend_.disconnect(id);
     states_.clear();
+    dirty_.clear();
+    schedule_.clear();
     icons_dirty_ = true;
     sync_icons();
     std::lock_guard lk(snapshot_mu_);
@@ -133,6 +159,9 @@ void Presence::disconnect_all() {
 }
 
 void Presence::apply(const Command& c, int64_t now) {
+    // Before anything can throw, so a user whose command failed halfway is still stepped. Drop
+    // forgets the user and Token changes nothing step() looks at.
+    if (c.kind == Command::Put || c.kind == Command::Clear || c.kind == Command::Attach) dirty_.insert(c.key);
     switch (c.kind) {
     case Command::Put: {
         auto& st = states_[c.key];
@@ -188,8 +217,13 @@ void Presence::apply(const Command& c, int64_t now) {
         break;
     }
     case Command::IconsChanged: {
-        for (auto& [id, st] : states_)
-            if (st.desired) st.desired->large_image = image_for(st);
+        for (auto& [id, st] : states_) {
+            if (!st.desired) continue;
+            auto image = image_for(st);
+            if (image == st.desired->large_image) continue;
+            st.desired->large_image = std::move(image);
+            dirty_.insert(id);
+        }
         break;
     }
     case Command::Token: {
@@ -203,6 +237,7 @@ void Presence::apply(const Command& c, int64_t now) {
 }
 
 bool Presence::step(const std::string& id, UserState& st, int64_t now) {
+    ++step_count_;
     if (!st.cleared_at_ms && now - st.last_seen_ms >= kIdleClearMs) clear_user(id, st, now);
     if (st.cleared_at_ms) {
         if (!st.connected) return false;
@@ -246,8 +281,44 @@ void Presence::clear_user(const std::string& id, UserState& st, int64_t now) {
     publish(id, std::nullopt);
 }
 
+std::optional<int64_t> Presence::next_due(const UserState& st) {
+    if (st.cleared_at_ms) {
+        if (!st.connected) return std::nullopt;
+        return *st.cleared_at_ms + kDisconnectAfterClearMs;
+    }
+    int64_t due = st.last_seen_ms + kIdleClearMs;
+    if (!st.desired) return due;
+    if (!st.connected) {
+        // step() records last_connect_ms on every attempt, including a token retry for later.
+        if (st.last_connect_ms) due = std::min(due, *st.last_connect_ms + kReconnectIntervalMs);
+    } else if (!same_activity(*st.desired, st.sent) && st.last_sent_ms) {
+        due = std::min(due, *st.last_sent_ms + kMinSendIntervalMs);
+    }
+    return due;
+}
+
+void Presence::reschedule(const std::string& id, UserState& st) {
+    const auto due = next_due(st);
+    if (due == st.due_ms) return;
+    unschedule(id, st);
+    if (!due) return;
+    schedule_.emplace(*due, id);
+    st.due_ms = due;
+}
+
+void Presence::unschedule(const std::string& id, UserState& st) {
+    if (!st.due_ms) return;
+    schedule_.erase({*st.due_ms, id});
+    st.due_ms.reset();
+}
+
 void Presence::forget(const std::string& id) {
-    if (states_.erase(id) != 0) icons_dirty_ = true;
+    auto it = states_.find(id);
+    if (it != states_.end()) {
+        unschedule(id, it->second);
+        states_.erase(it);
+        icons_dirty_ = true;
+    }
     publish(id, std::nullopt);
 }
 
@@ -267,6 +338,8 @@ void Presence::connection_lost(const std::string& id, bool auth_failed) {
     it->second.connected = false;
     it->second.sent.reset();
     publish(id, std::nullopt);
+    // Stepped at the next tick: a cleared user is forgotten, a shown one reconnects at the pace.
+    dirty_.insert(id);
 }
 
 // An expired access token is not a broken link: the refresher will store a fresh one, and

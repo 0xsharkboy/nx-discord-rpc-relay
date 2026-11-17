@@ -6,6 +6,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,6 +53,8 @@ public:
     std::optional<ActivitySpec> current(const std::string& discord_id);
     // The icon hashes held by the users' presences as of the last tick.
     std::unordered_set<std::string> icons_in_use();
+    // Test hook: how many times tick() has stepped a user so far.
+    uint64_t step_count() const { return step_count_; }
 
     // Shutdown, on the SDK thread once no request can enqueue anymore. clear_all() discards queued
     // commands and clears every shown activity; disconnect_all() then ends every client. Pump the
@@ -76,12 +79,19 @@ private:
         std::optional<std::string> icon;
         // The link the client was connected with; an auth loss may only break that one.
         std::string key_hash;
+        // When step() next has something to do without any new command; its entry in schedule_.
+        std::optional<int64_t> due_ms;
     };
 
     void enqueue(Command c);
     void apply(const Command& c, int64_t now);
     // False when the user must be forgotten.
     bool step(const std::string& id, UserState& st, int64_t now);
+    // The earliest time step() acts on its own: idle clear, disconnect after a clear, reconnect
+    // or token retry, or a change held by the send limit. Mirrors the checks in step().
+    static std::optional<int64_t> next_due(const UserState& st);
+    void reschedule(const std::string& id, UserState& st);
+    void unschedule(const std::string& id, UserState& st);
     void clear_user(const std::string& id, UserState& st, int64_t now);
     void forget(const std::string& id);
     void connection_lost(const std::string& id, bool auth_failed);
@@ -108,8 +118,13 @@ private:
     std::mutex snapshot_mu_;
     std::unordered_map<std::string, ActivitySpec> snapshot_;
 
+    // tick() steps only the users in dirty_ (touched by a command or a lost connection since their
+    // last step) and those whose due time has come; idle users cost nothing. SDK thread only.
     std::unordered_map<std::string, UserState> states_;
+    std::unordered_set<std::string> dirty_;
+    std::set<std::pair<int64_t, std::string>> schedule_;
     bool icons_dirty_ = false;
+    uint64_t step_count_ = 0;
 
     std::mutex icons_mu_;
     std::unordered_set<std::string> icons_in_use_;

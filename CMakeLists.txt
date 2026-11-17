@@ -74,6 +74,10 @@ add_library(relay_core STATIC
     src/stb_impl.cpp
 )
 target_include_directories(relay_core PUBLIC src)
+# A burst of consoles reconnecting together overflows cpp-httplib's default accept queue of 5, and
+# dropped SYNs are retried by clients after 1 s and 3 s. PUBLIC so that every translation unit that
+# includes httplib.h agrees on the inline listen code. The kernel caps it at net.core.somaxconn.
+target_compile_definitions(relay_core PUBLIC CPPHTTPLIB_LISTEN_BACKLOG=1024)
 target_link_libraries(relay_core PUBLIC
     nlohmann_json::nlohmann_json httplib::httplib SQLite3::SQLite3 OpenSSL::SSL OpenSSL::Crypto stb)
 

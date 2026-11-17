@@ -24,7 +24,12 @@ public:
     void connect(const std::string& id, const std::string& token) override {
         record({Kind::Connect, id, token, std::nullopt});
     }
-    void set(const std::string& id, const ActivitySpec& spec) override { record({Kind::Set, id, {}, spec}); }
+    // set() for this user throws, as a backend failure would.
+    std::string throw_on_set_for;
+    void set(const std::string& id, const ActivitySpec& spec) override {
+        if (id == throw_on_set_for) throw std::runtime_error("backend failure");
+        record({Kind::Set, id, {}, spec});
+    }
     void clear(const std::string& id) override { record({Kind::Clear, id, {}, std::nullopt}); }
     void disconnect(const std::string& id) override { record({Kind::Disconnect, id, {}, std::nullopt}); }
     bool throw_on_update_token = false;
