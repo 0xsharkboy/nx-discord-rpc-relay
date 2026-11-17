@@ -136,15 +136,15 @@ TEST_CASE("parse_device_response") {
 
 TEST_CASE("parse_identity_response") {
     const char* real =
-        R"({"application":{"id":"1571614802260787280","name":"app"},"expires":"2026-11-23T00:00:00+00:00","scopes":["openid","sdk.social_layer_presence"],"user":{"id":"123","username":"test_rpc","global_name":null}})";
-    auto r = parse_identity_response(200, real, "1571614802260787280");
+        R"({"application":{"id":"1234567890123456789","name":"app"},"expires":"2026-11-23T00:00:00+00:00","scopes":["openid","sdk.social_layer_presence"],"user":{"id":"123","username":"test_rpc","global_name":null}})";
+    auto r = parse_identity_response(200, real, "1234567890123456789");
     REQUIRE(r);
     CHECK(r->discord_id == "123");
     CHECK(r->username == "test_rpc");
 
     CHECK_FALSE(parse_identity_response(200, real, "999"));
-    CHECK_FALSE(parse_identity_response(401, real, "1571614802260787280"));
-    CHECK_FALSE(parse_identity_response(0, "", "1571614802260787280"));
+    CHECK_FALSE(parse_identity_response(401, real, "1234567890123456789"));
+    CHECK_FALSE(parse_identity_response(0, "", "1234567890123456789"));
     CHECK_FALSE(parse_identity_response(200, R"({"application":{"id":"1"}})", "1"));
     CHECK_FALSE(parse_identity_response(200, R"({"user":{"id":""}})", "1"));
     CHECK_FALSE(parse_identity_response(200, R"({"user":{"id":123}})", "1"));

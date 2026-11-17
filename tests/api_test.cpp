@@ -102,7 +102,7 @@ struct Fixture {
         root = fs::temp_directory_path() /
                ("relay_api_test_" + std::to_string(::getpid()) + "_" + std::to_string(n++));
         fs::create_directories(root / "icons");
-        cfg.client_id = "1571614802260787280";
+        cfg.client_id = "1234567890123456789";
         cfg.client_secret = "client-secret";
         cfg.public_base_url = "https://x.test";
         cfg.token_key.fill(7);

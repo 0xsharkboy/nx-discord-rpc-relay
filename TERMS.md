@@ -1,6 +1,6 @@
 # Terms of service
 
-Last updated: 2026-11-16
+Last updated: 2026-11-17
 
 These terms cover the official nx-discord-rpc relay at `https://nx-discord-rpc.0xsharkboy.dev`,
 operated by 0xsharkboy and used by the Discord application "NX RPC". By linking your Discord account
@@ -16,6 +16,11 @@ interrupted or stop at any time, with or without notice.
 
 This project is not affiliated with, endorsed or sponsored by Discord or Nintendo. Discord, Nintendo
 and Nintendo Switch are trademarks of their respective owners.
+
+## Age
+
+You must be at least 13 years old, and old enough to use Discord in your country, to link your
+Discord account to the relay.
 
 ## Acceptable use
 

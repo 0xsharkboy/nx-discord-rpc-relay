@@ -28,7 +28,7 @@ std::string key_b64() {
 }
 
 Env full() {
-    return {{"DISCORD_CLIENT_ID", "1571614802260787280"},
+    return {{"DISCORD_CLIENT_ID", "1234567890123456789"},
             {"DISCORD_CLIENT_SECRET", "s3cr3t-client-value"},
             {"TOKEN_ENC_KEY", key_b64()},
             {"PUBLIC_BASE_URL", "https://rpc.example.dev"}};
@@ -60,7 +60,7 @@ TEST_CASE("load_config applies defaults") {
     auto r = load(full());
     REQUIRE(std::holds_alternative<Config>(r));
     auto& c = std::get<Config>(r);
-    CHECK(c.client_id == "1571614802260787280");
+    CHECK(c.client_id == "1234567890123456789");
     CHECK(c.client_secret == "s3cr3t-client-value");
     CHECK(c.public_base_url == "https://rpc.example.dev");
     CHECK(c.listen_host == "0.0.0.0");
