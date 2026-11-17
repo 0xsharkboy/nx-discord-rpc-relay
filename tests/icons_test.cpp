@@ -276,7 +276,12 @@ TEST_CASE("icons: touch writes at most once a day per hash") {
     e.icons->touch(sha);
     CHECK(e.db->icon_files_unused_since(2000 + 86400).empty());
 
+    // An invalid hash creates no row and leaves the stored one alone.
+    e.clock += 2 * 86400;
     e.icons->touch("../t");
+    CHECK_FALSE(e.db->has_icon_file("../t"));
+    CHECK(e.db->icon_file_count() == 1);
+    CHECK(e.db->icon_files_unused_since(2000 + 86401) == std::vector<std::string>{sha});
 }
 
 TEST_CASE("icons: cleanup_spares_in_use_and_recent") {

@@ -178,6 +178,13 @@ void migrate(sqlite3* db) {
         sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
         throw;
     }
+    if (version > 0 && version < 4) {
+        // Dropping votes only frees its pages: rewrite the file and empty the WAL so no voter id
+        // stays on disk, whatever secure_delete the SQLite build defaults to. A new database never
+        // held a vote.
+        exec(db, "VACUUM");
+        exec(db, "PRAGMA wal_checkpoint(TRUNCATE)");
+    }
 }
 
 }  // namespace

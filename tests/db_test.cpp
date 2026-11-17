@@ -5,6 +5,8 @@
 #include <atomic>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <unistd.h>
 #include <string>
@@ -439,6 +441,41 @@ TEST_CASE("db: schema_v4_drops_votes_and_creates_icon_files") {
     CHECK(t.scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'votes'") == 0);
     CHECK(t.scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'icon_files'") == 1);
     CHECK(t.scalar("SELECT COUNT(*) FROM published_icons") == 1);
+}
+
+TEST_CASE("db: migrating to v4 leaves no dropped vote bytes on disk") {
+    TempDb t;
+    const std::string voter = "voter-4815162342";
+    std::string sql =
+        "CREATE TABLE users (discord_id TEXT PRIMARY KEY, username TEXT NOT NULL,"
+        " key_hash TEXT NOT NULL UNIQUE, access_sealed BLOB NOT NULL, refresh_sealed BLOB NOT NULL,"
+        " access_expires_at INTEGER NOT NULL, link_broken INTEGER NOT NULL DEFAULT 0,"
+        " last_seen_at INTEGER NOT NULL DEFAULT 0, avatar TEXT,"
+        " identity_checked INTEGER NOT NULL DEFAULT 0);"
+        "CREATE TABLE published_icons (title_id TEXT PRIMARY KEY,"
+        " sha256 TEXT NOT NULL, published_at INTEGER NOT NULL);"
+        "CREATE TABLE votes (title_id TEXT NOT NULL, sha256 TEXT NOT NULL,"
+        " discord_id TEXT NOT NULL, created_at INTEGER NOT NULL,"
+        " PRIMARY KEY (title_id, sha256, discord_id));"
+        "CREATE INDEX votes_created ON votes(created_at);"
+        "CREATE TABLE blocked_hashes (sha256 TEXT PRIMARY KEY);";
+    for (int i = 0; i < 50; ++i)
+        sql += "INSERT INTO votes VALUES ('01000000000" + std::to_string(10000 + i) + "', 'H', '" + voter +
+               "', 60);";
+    sql += "PRAGMA user_version = 3;";
+    t.exec(sql.c_str());
+
+    auto read_all = [](const std::string& p) {
+        std::ifstream f(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    };
+    REQUIRE(read_all(t.path.string()).find(voter) != std::string::npos);
+
+    auto db = t.open();
+    db.reset();
+    db = t.open();
+    CHECK(read_all(t.path.string()).find(voter) == std::string::npos);
+    CHECK(read_all(t.path.string() + "-wal").find(voter) == std::string::npos);
 }
 
 TEST_CASE("db: a fresh database is at version 4 without votes") {
