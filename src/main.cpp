@@ -40,6 +40,9 @@ constexpr int64_t kHourMs = 3'600'000;
 constexpr int kLinkPerHour = 10;
 constexpr int kPollPerHour = 720;
 constexpr int kIconPerHour = 30;
+// New icon files per account per day, so one account cannot fill the global icon cap.
+constexpr int kNewIconsPerDay = 50;
+constexpr int64_t kDayMs = 24 * kHourMs;
 constexpr auto kTickEvery = 10ms;
 constexpr auto kRefreshEvery = 10min;
 // Daily maintenance: icon cleanup and the 90 day inactive account sweep.
@@ -191,7 +194,9 @@ int main() {
     RateLimiter link_limiter(kLinkPerHour, kHourMs, unix_ms);
     RateLimiter poll_limiter(kPollPerHour, kHourMs, unix_ms);
     RateLimiter icon_limiter(kIconPerHour, kHourMs, unix_ms);
-    Deps deps{cfg, *db, icons, links, presence, link_limiter, poll_limiter, icon_limiter, nullptr, nullptr, unix_s};
+    RateLimiter new_icon_limiter(kNewIconsPerDay, kDayMs, unix_ms);
+    Deps deps{cfg, *db, icons, links, presence, link_limiter, poll_limiter, icon_limiter, new_icon_limiter,
+              nullptr, nullptr, unix_s};
 
     httplib::Server svr;
     register_routes(svr, deps);

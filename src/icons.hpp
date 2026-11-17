@@ -24,13 +24,17 @@ constexpr int64_t kDefaultMaxIconFiles = 10000;
 // A stored icon unused for this long is deleted by cleanup, unless a live presence uses it.
 constexpr int64_t kIconLifetimeS = 30 * 86400;
 
-enum class StoreResult { Stored, Invalid, TooLarge, Blocked, Full };
+enum class StoreResult { Stored, Invalid, TooLarge, Blocked, Full, Limited };
 
-// sha256 is set only for Stored.
+// sha256 is set only for Stored, retry_after_s only for Limited.
 struct StoreOutcome {
     StoreResult result;
     std::string sha256;
+    int64_t retry_after_s = 0;
 };
+
+// Asked before a new file is written: nullopt admits it, else the seconds to wait.
+using AdmitNewIcon = std::function<std::optional<int64_t>()>;
 
 // Icon files named after the SHA-256 of the raw uploaded bytes, under <icons_dir>/h/. The stored
 // file is the re-encoded image and is never re-hashed.
@@ -40,8 +44,9 @@ public:
     Icons(Db& db, std::string icons_dir, int64_t max_files, std::function<int64_t()> now);
 
     // Throws std::runtime_error if the icon file cannot be written (server I/O error); nothing is
-    // recorded then.
-    StoreOutcome store(std::string_view jpeg);
+    // recorded then. `admit_new`, when set, is asked only for bytes not stored yet and with room
+    // left under the cap; a refusal gives Limited and stores nothing.
+    StoreOutcome store(std::string_view jpeg, const AdmitNewIcon& admit_new = {});
     // The file row exists and the hash is not blocked.
     bool usable(std::string_view sha256);
     // Records a use of the hash, writing at most once a day per hash.

@@ -116,7 +116,7 @@ std::string Icons::hash_file(std::string_view sha256) const {
     return (fs::path(dir_) / "h" / (std::string(sha256) + ".jpg")).string();
 }
 
-StoreOutcome Icons::store(std::string_view jpeg) {
+StoreOutcome Icons::store(std::string_view jpeg, const AdmitNewIcon& admit_new) {
     if (jpeg.empty()) return {StoreResult::Invalid, {}};
     if (jpeg.size() > kMaxBytes) return {StoreResult::TooLarge, {}};
     auto encoded = reencode(jpeg);
@@ -134,6 +134,9 @@ StoreOutcome Icons::store(std::string_view jpeg) {
         return {StoreResult::Stored, std::move(hash)};
     }
     if (db_.icon_file_count() >= max_files_) return {StoreResult::Full, {}};
+    if (admit_new) {
+        if (auto wait_s = admit_new()) return {StoreResult::Limited, {}, *wait_s};
+    }
     if (!write_atomic(path, *encoded)) throw std::runtime_error("failed to write icon file");
     db_.add_icon_file(hash, now_());
     return {StoreResult::Stored, std::move(hash)};

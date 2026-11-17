@@ -91,7 +91,7 @@ struct Fixture {
     std::unique_ptr<Icons> icons;
     std::unique_ptr<Links> links;
     std::unique_ptr<Presence> presence;
-    std::unique_ptr<RateLimiter> link_limiter, poll_limiter, icon_limiter;
+    std::unique_ptr<RateLimiter> link_limiter, poll_limiter, icon_limiter, new_icon_limiter;
     std::mutex log_mu;
     std::vector<std::string> log_lines;
     std::unique_ptr<Deps> deps;
@@ -100,7 +100,8 @@ struct Fixture {
     int port = 0;
     std::unique_ptr<httplib::Client> cli;
 
-    explicit Fixture(bool trust_proxy = false, bool with_admin = true, int64_t max_icon_files = kDefaultMaxIconFiles) {
+    explicit Fixture(bool trust_proxy = false, bool with_admin = true, int64_t max_icon_files = kDefaultMaxIconFiles,
+                     int new_icons_per_day = 50) {
         static std::atomic<int> n{0};
         root = fs::temp_directory_path() /
                ("relay_api_test_" + std::to_string(::getpid()) + "_" + std::to_string(n++));
@@ -127,8 +128,9 @@ struct Fixture {
         link_limiter = std::make_unique<RateLimiter>(10, 3'600'000, now_ms);
         poll_limiter = std::make_unique<RateLimiter>(720, 3'600'000, now_ms);
         icon_limiter = std::make_unique<RateLimiter>(30, 3'600'000, now_ms);
+        new_icon_limiter = std::make_unique<RateLimiter>(new_icons_per_day, 86'400'000, now_ms);
         deps = std::make_unique<Deps>(Deps{
-            cfg, *db, *icons, *links, *presence, *link_limiter, *poll_limiter, *icon_limiter,
+            cfg, *db, *icons, *links, *presence, *link_limiter, *poll_limiter, *icon_limiter, *new_icon_limiter,
             [this] { return now.load(); },
             [this](const std::string& line) {
                 std::lock_guard lk(log_mu);
@@ -983,4 +985,56 @@ TEST_CASE("api: a presence with a stored icon records its use") {
     f.now += 2LL * 86'400'000;
     CHECK(f.icons->cleanup({}) == 0);
     CHECK(f.icons->usable(sha256_hex(jpg)));
+}
+
+TEST_CASE("api: new icon files are limited per account per day, known hashes and the admin are not") {
+    Fixture f(false, true, kDefaultMaxIconFiles, 2);
+    auto a = f.link("42", "alice");
+    auto b = f.link("43", "bob");
+    // Refused uploads cost nothing.
+    for (int i = 0; i < 3; ++i) REQUIRE(f.put_icon(a, kTid, "x")->status == 400);
+    const auto one = make_jpeg(256, 256, 1);
+    const auto two = make_jpeg(256, 256, 2);
+    const auto three = make_jpeg(256, 256, 3);
+    REQUIRE(f.put_icon(a, kTid, one)->status == 200);
+    REQUIRE(f.put_icon(a, kTid, two)->status == 200);
+
+    auto r = f.put_icon(a, kTid, three);
+    check_error(r, 429, "rate_limited");
+    CHECK_FALSE(r->get_header_value("Retry-After").empty());
+    // Not stored: still asked for, and not served.
+    CHECK(body_of(f.put_presence_icon(a, kTid, sha256_hex(three))) == json{{"need_icon", true}});
+    check_error(f.cli->Get("/icons/" + sha256_hex(three) + ".jpg"), 404, "not_found");
+
+    // A known hash is unaffected, also one another account stored.
+    CHECK(f.put_icon(a, kTid, one)->status == 200);
+    REQUIRE(f.put_icon(b, kTid, three)->status == 200);
+    CHECK(f.put_icon(a, kTid, three)->status == 200);
+    // Other accounts and the admin keep storing new files.
+    CHECK(f.put_icon(b, kTid, make_jpeg(256, 256, 4))->status == 200);
+    CHECK(f.put_icon(kAdminKey, kTid, make_jpeg(256, 256, 5))->status == 200);
+
+    f.now += 86'400'000;
+    CHECK(f.put_icon(a, kTid, make_jpeg(256, 256, 6))->status == 200);
+}
+
+TEST_CASE("api: a database error on the presence icon still shows the presence") {
+    for (const char* table : {"icon_files", "blocked_hashes"}) {
+        CAPTURE(table);
+        Fixture f;
+        auto key = f.link();
+        sqlite3* raw = nullptr;
+        REQUIRE(sqlite3_open((f.root / "relay.db").string().c_str(), &raw) == SQLITE_OK);
+        sqlite3_busy_timeout(raw, 5000);
+        const std::string sql = std::string("DROP TABLE ") + table;
+        const int rc = sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, nullptr);
+        sqlite3_close(raw);
+        REQUIRE(rc == SQLITE_OK);
+
+        auto r = f.put_presence_icon(key, kTid, sha256_hex(make_jpeg(256, 256, 1)));
+        REQUIRE(r);
+        CHECK(r->status == 200);
+        CHECK(body_of(r) == json{{"need_icon", false}});
+        CHECK(f.shown_image() == "switch_logo");
+    }
 }

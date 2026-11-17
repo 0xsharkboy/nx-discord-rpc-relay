@@ -269,18 +269,25 @@ void handle_put_presence(Deps& d, const Request& req, Response& res) {
         return;
     }
     bool need_icon = false;
-    if (d.icons.usable(*update->icon)) {
-        // Best effort, like the activity above.
-        try {
-            d.icons.touch(*update->icon);
-        } catch (const std::exception& e) {
-            std::cerr << "relay: recording icon use failed: " << e.what() << '\n';
+    try {
+        if (d.icons.usable(*update->icon)) {
+            // Best effort, like the activity above.
+            try {
+                d.icons.touch(*update->icon);
+            } catch (const std::exception& e) {
+                std::cerr << "relay: recording icon use failed: " << e.what() << '\n';
+            }
+        } else if (d.db.is_blocked(*update->icon)) {
+            // Shown as if the console had sent no hash, and never asked for.
+            update->icon.reset();
+        } else {
+            need_icon = true;
         }
-    } else if (d.db.is_blocked(*update->icon)) {
-        // Shown as if the console had sent no hash, and never asked for.
+    } catch (const std::exception& e) {
+        // An icon failure never breaks the presence: shown without the hash, and not asked for.
+        std::cerr << "relay: checking the presence icon failed: " << e.what() << '\n';
         update->icon.reset();
-    } else {
-        need_icon = true;
+        need_icon = false;
     }
     d.presence.put(user->discord_id, *update);
     send_json(res, 200, json{{"need_icon", need_icon}});
@@ -303,7 +310,9 @@ void handle_put_icon(Deps& d, const Request& req, Response& res) {
     }
     const auto& tid = req.path_params.at("tid");
     if (!valid_title_id(tid)) return send_error(res, 400, "invalid_icon", "Invalid title id");
-    auto out = d.icons.store(req.body);
+    AdmitNewIcon admit_new;
+    if (user) admit_new = [&d, &user] { return d.new_icon_limiter.take(user->key_hash); };
+    auto out = d.icons.store(req.body, admit_new);
     switch (out.result) {
     case StoreResult::Stored:
         // An upload counts as a use: a v0.3 console never sends the hash in its presence. Best
@@ -321,6 +330,9 @@ void handle_put_icon(Deps& d, const Request& req, Response& res) {
     case StoreResult::Blocked: return send_error(res, 400, "blocked", "This image was removed by an admin");
     case StoreResult::Full:
         return send_error(res, 503, "storage_full", "The relay stores no new icons for now, try again later");
+    case StoreResult::Limited:
+        res.set_header("Retry-After", std::to_string(out.retry_after_s));
+        return send_error(res, 429, "rate_limited", "Too many new icons from this account, retry later");
     }
     send_error(res, 500, "internal_error", "Internal server error");
 }
