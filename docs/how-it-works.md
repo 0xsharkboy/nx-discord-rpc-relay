@@ -159,7 +159,8 @@ no user id from them stays on disk.
 
 A file is used when a presence shows it and when it is uploaded. Once a day the relay deletes the
 files unused for 30 days, except those a live presence shows. The relay keeps at most 10000 files
-and refuses new images (`503 storage_full`) past that.
+and refuses new images (`503 storage_full`) past that. So that one account cannot fill it, an
+account can store at most 50 new images a day, counted in memory only by its API key's hash.
 
 Icons are served at `/icons/{hash}.jpg`, which is the URL Discord loads. Anyone who knows a hash can
 load its image, and a stored image can be shown by any user who sends its hash. An admin (holder of
@@ -175,6 +176,7 @@ no usable icon.
 | `POST /v1/link` | 10 per hour | client IP |
 | `POST /v1/link/{link_id}/poll` | 720 per hour | client IP |
 | `PUT /v1/icons/{title_id}` | 30 per hour | API key (the admin key is exempt) |
+| `PUT /v1/icons/{title_id}`, new images only | 50 per day | API key (the admin key is exempt) |
 
 See [protocol.md](protocol.md#rate-limits) for the details.
 

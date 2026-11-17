@@ -49,6 +49,8 @@ Held in memory only, never written to the database:
   time, the title id and the hash of the icon it shows. It is used only to send it to Discord.
   This is also the only place that links you to an icon, and it lasts only as long as your session.
 - **IP addresses**, used only as keys for the rate limits on the linking routes.
+- **Icon upload counters**, keyed by your API key's hash, for the rate limits on icon uploads,
+  including the daily limit on new images. They record no image and no title.
 - **Links in progress**, and a newly issued API key for 60 seconds after linking.
 
 The Discord Social SDK also keeps its own files on the server, managed by the SDK.
@@ -69,7 +71,8 @@ The Discord Social SDK also keeps its own files on the server, managed by the SD
   identify you.
 - **Your presence** is cleared from Discord after **150 seconds** without a report from your
   console, and is lost from memory when the relay restarts.
-- **Rate limit entries** are dropped after about two hours of inactivity at most, and on restart.
+- **Rate limit entries** are dropped after about two hours of inactivity at most (about two days
+  for the daily limit on new icons), and on restart.
 - **Logs**: the relay logs one line per request (method, path, status, duration) without IP
   addresses, headers, keys, tokens or request bodies. Some error messages name the Discord user id
   concerned. The logs are rotated at three files of 10 MB each.
@@ -105,7 +108,8 @@ only, and consoles reach the relay over HTTPS.
 Under the GDPR you have the right to access, correct and delete your data, to restrict or object to
 its processing, to data portability, and to withdraw your consent.
 
-- **Delete your data:** use **Unlink** in the homebrew. It deletes your account row at once, clears your presence and then revokes your Discord tokens.
+- **Delete your data:** use **Unlink** in the homebrew. It deletes your account row at once, clears
+  your presence and then revokes your Discord tokens.
 - **Revoke access in Discord:** remove "NX RPC" under User Settings > Authorized Apps. This stops
   the relay from acting for you, but only breaks the link: the stored data stays until you unlink,
   link again, or the account is deleted after 90 days of inactivity.

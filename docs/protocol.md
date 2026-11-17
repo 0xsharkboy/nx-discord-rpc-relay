@@ -87,12 +87,18 @@ Clients must branch on `error`, never on `message`.
 | `POST /v1/link` | 10 per hour | client IP |
 | `POST /v1/link/{link_id}/poll` | 720 per hour | client IP |
 | `PUT /v1/icons/{title_id}` | 30 per hour | API key (the admin key is exempt) |
+| `PUT /v1/icons/{title_id}`, new images only | 50 per day | API key (the admin key is exempt) |
 
 IPv6 clients are counted per /64 prefix.
 
 Limits are token buckets: the full allowance is available at once, and one request comes back
 every hour / limit (every 6 min for `POST /v1/link`). A refused request gets
 `429 rate_limited` with `Retry-After: <seconds>`.
+
+The daily icon limit counts only uploads that store a new image (bytes the relay did not have yet).
+It is also a token bucket: 50 new images at once, then one more every 24 h / 50 (about 29 min).
+It is held in memory only, keyed by the API key's hash, so that one account cannot fill the
+relay's icon storage for everyone.
 
 ## Presence timing
 
@@ -250,6 +256,9 @@ Rules:
 - Storing an image that is already stored is not an error.
 - The relay keeps at most 10000 icon files. Past that, new images are refused with
   `503 storage_full`.
+- An account stores at most 50 new images per day (see [Rate limits](#rate-limits)). Past that, an
+  upload of an image the relay does not have yet is refused with `429 rate_limited` and
+  `Retry-After`, and nothing is stored. Images already stored are accepted as before.
 - Uploads with the admin key are stored the same way and are not rate limited. They do not change
   anyone's presence.
 
