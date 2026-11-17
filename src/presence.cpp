@@ -274,7 +274,7 @@ void Presence::connection_lost(const std::string& id, bool auth_failed) {
 Presence::TokenLookup Presence::access_token(const std::string& id, int64_t now) {
     std::optional<User> user;
     try {
-        user = db_.user_by_discord_id(id);
+        user = db_.reader().user_by_discord_id(id);
     } catch (const std::exception& e) {
         std::cerr << "relay: presence could not load user " << id << ": " << e.what() << '\n';
         return {TokenLookup::Later, {}, {}};

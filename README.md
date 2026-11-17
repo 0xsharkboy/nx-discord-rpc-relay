@@ -11,6 +11,8 @@ on your behalf through the official Discord Social SDK.
 The official instance, `https://nx-discord-rpc.0xsharkboy.dev`, is operated by 0xsharkboy and is
 what the homebrew uses by default.
 
+Status: https://stats.uptimerobot.com/aGuK3xhz7J
+
 ## Documentation
 
 - [How it works](docs/how-it-works.md): what the relay stores and logs, token encryption, refresh

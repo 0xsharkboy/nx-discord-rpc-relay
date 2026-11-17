@@ -11,6 +11,7 @@
 #include "crypto.hpp"
 #include "fake_backend.hpp"
 #include "presence.hpp"
+#include "stuck_writer.hpp"
 
 using namespace relay;
 using Kind = FakeBackend::Kind;
@@ -605,4 +606,20 @@ TEST_CASE("presence: a failing command does not lose the commands queued after i
     CHECK_NOTHROW(f.presence->tick());
     CHECK(f.backend.calls(Kind::Connect, "43").size() == 1);
     CHECK(f.presence->current("43")->name == "Mario");
+}
+
+TEST_CASE("presence: sdk_reads_do_not_wait_for_writer") {
+    Fixture f;
+    f.put("42", "Zelda");
+    StuckWriter w(f.path, [&] { f.db->touch_user("43", "hash43", f.now / 1000); });
+    const auto ms = elapsed_ms([&] { f.presence->tick(); });
+    const bool writer_was_waiting = w.waiting();
+    w.join();
+    CHECK(writer_was_waiting);
+    CHECK(ms < 100);
+    auto calls = f.backend.calls();
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[0].kind == Kind::Connect);
+    CHECK(calls[0].token == "access-42");
+    CHECK(calls[1].kind == Kind::Set);
 }

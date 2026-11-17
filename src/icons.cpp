@@ -214,6 +214,21 @@ std::optional<std::string> Icons::published_path(std::string_view title_id) {
     return p;
 }
 
+// No Icons lock: these only read the database, in one statement each, and the file system.
+bool Icons::reader_usable(std::string_view sha256) {
+    return valid_sha256(sha256) && db_.reader().icon_usable(sha256);
+}
+
+std::optional<std::string> Icons::reader_published_path(std::string_view title_id) {
+    if (!valid_title_id(title_id)) return std::nullopt;
+    const std::string tid = normalize_title_id(title_id);
+    if (!db_.reader().unblocked_published_icon(tid)) return std::nullopt;
+    auto p = path_for(tid);
+    std::error_code ec;
+    if (!fs::exists(p, ec)) return std::nullopt;
+    return p;
+}
+
 bool Icons::admin_delete(std::string_view title_id) {
     if (!valid_title_id(title_id)) return false;
     const std::string tid = normalize_title_id(title_id);
@@ -229,8 +244,8 @@ bool Icons::admin_delete(std::string_view title_id) {
 
 std::string presence_image(Icons& icons, const std::string& base_url, const std::optional<std::string>& title_id,
                            const std::optional<std::string>& icon) {
-    if (icon && icons.usable(*icon)) return base_url + "/icons/" + *icon + ".jpg";
-    if (title_id && valid_title_id(*title_id) && icons.published_path(*title_id))
+    if (icon && icons.reader_usable(*icon)) return base_url + "/icons/" + *icon + ".jpg";
+    if (title_id && valid_title_id(*title_id) && icons.reader_published_path(*title_id))
         return base_url + "/icons/" + normalize_title_id(*title_id) + ".jpg";
     return "switch_logo";
 }

@@ -14,6 +14,7 @@
 #include <sqlite3.h>
 
 #include "db.hpp"
+#include "stuck_writer.hpp"
 
 using namespace relay;
 
@@ -556,4 +557,84 @@ TEST_CASE("db: update_identity marks the identity as checked") {
     CHECK_FALSE(db->user_by_discord_id("1")->identity_checked);
     CHECK(db->update_identity("1", "h1", "alice", std::nullopt));
     CHECK(db->user_by_discord_id("1")->identity_checked);
+}
+
+namespace {
+const std::string kSha(64, 'a');
+const std::string kSha2(64, 'b');
+constexpr const char* kLegacyTid = "0100A0D02127E000";
+}  // namespace
+
+TEST_CASE("db: sdk_reads_do_not_wait_for_writer") {
+    TempDb t;
+    auto db = t.open();
+    db->upsert_user(make_user("1", "h1"));
+    db->add_icon_file(kSha, 10);
+    t.exec(("INSERT INTO published_icons VALUES ('" + std::string(kLegacyTid) + "', '" + kSha2 + "', 1)").c_str());
+
+    StuckWriter w(t.path, [&] { db->touch_user("1", "h1", 1'000'000); });
+    std::optional<User> u;
+    bool usable = false;
+    std::optional<IconRecord> legacy;
+    const auto ms = elapsed_ms([&] {
+        u = db->reader().user_by_discord_id("1");
+        usable = db->reader().icon_usable(kSha);
+        legacy = db->reader().unblocked_published_icon(kLegacyTid);
+    });
+    const bool writer_was_waiting = w.waiting();
+    w.join();
+
+    CHECK(writer_was_waiting);
+    CHECK(ms < 100);
+    REQUIRE(u);
+    CHECK(u->key_hash == "h1");
+    CHECK(usable);
+    REQUIRE(legacy);
+    CHECK(legacy->sha256 == kSha2);
+    // The stuck write went through once the lock was released.
+    CHECK(db->user_by_discord_id("1")->last_seen_at == 1'000'000);
+}
+
+TEST_CASE("db: the reader sees every committed write") {
+    TempDb t;
+    auto db = t.open();
+    auto& r = db->reader();
+    CHECK_FALSE(r.user_by_discord_id("1"));
+    db->upsert_user(make_user("1", "h1"));
+    REQUIRE(r.user_by_discord_id("1"));
+    CHECK(r.user_by_discord_id("1")->access_sealed == std::vector<uint8_t>{1, 2, 3});
+    db->update_tokens("1", "h1", std::vector<uint8_t>{9, 9}, std::vector<uint8_t>{8}, 2000);
+    CHECK(r.user_by_discord_id("1")->access_sealed == std::vector<uint8_t>{9, 9});
+    CHECK(r.user_by_discord_id("1")->access_expires_at == 2000);
+    db->break_link("1", "h1");
+    CHECK(r.user_by_discord_id("1")->link_broken);
+    CHECK(db->delete_user("1", "h1"));
+    CHECK_FALSE(r.user_by_discord_id("1"));
+
+    CHECK_FALSE(r.icon_usable(kSha));
+    db->add_icon_file(kSha, 10);
+    CHECK(r.icon_usable(kSha));
+    db->block_hash(kSha);
+    CHECK_FALSE(r.icon_usable(kSha));
+    // Blocked without a row, as after remove_hash.
+    db->delete_icon_file(kSha);
+    CHECK_FALSE(r.icon_usable(kSha));
+
+    CHECK_FALSE(r.unblocked_published_icon(kLegacyTid));
+    t.exec(("INSERT INTO published_icons VALUES ('" + std::string(kLegacyTid) + "', '" + kSha2 + "', 7)").c_str());
+    auto legacy = r.unblocked_published_icon(kLegacyTid);
+    REQUIRE(legacy);
+    CHECK(legacy->title_id == kLegacyTid);
+    CHECK(legacy->published_at == 7);
+    db->block_hash(kSha2);
+    CHECK_FALSE(r.unblocked_published_icon(kLegacyTid));
+    CHECK(db->published_icon(kLegacyTid));
+}
+
+TEST_CASE("db: an in-memory database reads through its only connection") {
+    auto db = Db::open(":memory:");
+    db->upsert_user(make_user("1", "h1"));
+    db->add_icon_file(kSha, 10);
+    REQUIRE(db->reader().user_by_discord_id("1"));
+    CHECK(db->reader().icon_usable(kSha));
 }

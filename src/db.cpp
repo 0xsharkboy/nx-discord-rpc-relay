@@ -199,10 +199,23 @@ std::unique_ptr<Db> Db::open(const std::string& path) {
     exec(self->db_, "PRAGMA journal_mode=WAL");
     exec(self->db_, "PRAGMA synchronous=NORMAL");
     migrate(self->db_);
+    // Opened after the migration, whose VACUUM must be the only connection. A private database
+    // (":memory:" or "") cannot be opened twice.
+    if (path.empty() || path == ":memory:") {
+        self->reader_.db_ = self->db_;
+        self->reader_.mu_ = &self->mu_;
+        return self;
+    }
+    rc = sqlite3_open_v2(path.c_str(), &self->read_db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
+    if (rc != SQLITE_OK) fail(self->read_db_, "open reader");
+    sqlite3_busy_timeout(self->read_db_, 5000);
+    self->reader_.db_ = self->read_db_;
+    self->reader_.mu_ = &self->read_mu_;
     return self;
 }
 
 Db::~Db() {
+    if (read_db_) sqlite3_close(read_db_);
     if (db_) sqlite3_close(db_);
 }
 
@@ -442,6 +455,36 @@ int64_t Db::icon_file_count() {
     Stmt s(db_, "SELECT COUNT(*) FROM icon_files");
     s.step();
     return s.col_i64(0);
+}
+
+std::optional<User> Db::Reader::user_by_discord_id(std::string_view discord_id) {
+    std::lock_guard lock(*mu_);
+    Stmt s(db_,
+           (std::string("SELECT ") + kUserCols + " FROM users WHERE discord_id = ?1").c_str());
+    s.text(1, discord_id);
+    if (!s.step()) return std::nullopt;
+    return read_user(s);
+}
+
+bool Db::Reader::icon_usable(std::string_view sha256) {
+    std::lock_guard lock(*mu_);
+    // One statement, so both tables are read from the same snapshot.
+    Stmt s(db_,
+           "SELECT EXISTS (SELECT 1 FROM icon_files WHERE sha256 = ?1) "
+           "AND NOT EXISTS (SELECT 1 FROM blocked_hashes WHERE sha256 = ?1)");
+    s.text(1, sha256);
+    s.step();
+    return s.col_i64(0) != 0;
+}
+
+std::optional<IconRecord> Db::Reader::unblocked_published_icon(std::string_view title_id) {
+    std::lock_guard lock(*mu_);
+    Stmt s(db_,
+           "SELECT p.title_id, p.sha256, p.published_at FROM published_icons p "
+           "WHERE p.title_id = ?1 AND NOT EXISTS (SELECT 1 FROM blocked_hashes b WHERE b.sha256 = p.sha256)");
+    s.text(1, title_id);
+    if (!s.step()) return std::nullopt;
+    return IconRecord{s.col_text(0), s.col_text(1), s.col_i64(2)};
 }
 
 }  // namespace relay

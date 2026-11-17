@@ -37,6 +37,24 @@ struct IconRecord {
 
 class Db {
 public:
+    // Lookups for the SDK thread. They run on a second, read-only connection with its own lock, so
+    // they never wait behind a write on the main connection (WAL), and see every write committed
+    // before they start. A ":memory:" database has no second connection: they share the main one.
+    class Reader {
+    public:
+        std::optional<User> user_by_discord_id(std::string_view);
+        // The hash has an icon file row and is not blocked.
+        bool icon_usable(std::string_view sha256);
+        // The legacy icon published for the title, unless its hash is blocked.
+        std::optional<IconRecord> unblocked_published_icon(std::string_view title_id);
+
+    private:
+        friend class Db;
+        Reader() = default;
+        sqlite3* db_ = nullptr;
+        std::mutex* mu_ = nullptr;
+    };
+
     static std::unique_ptr<Db> open(const std::string& path);
     ~Db();
     Db(const Db&) = delete;
@@ -87,12 +105,18 @@ public:
     void delete_icon_file(std::string_view sha256);
     int64_t icon_file_count();
 
+    Reader& reader() { return reader_; }
+
 private:
     bool delete_user_where(std::string_view discord_id, std::string_view key_hash,
                            std::optional<int64_t> seen_before);
     Db() = default;
     sqlite3* db_ = nullptr;
     std::mutex mu_;
+    // Null for ":memory:".
+    sqlite3* read_db_ = nullptr;
+    std::mutex read_mu_;
+    Reader reader_;
 };
 
 }  // namespace relay

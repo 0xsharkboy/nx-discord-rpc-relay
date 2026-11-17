@@ -16,6 +16,7 @@
 
 #include "crypto.hpp"
 #include "icons.hpp"
+#include "stuck_writer.hpp"
 
 using namespace relay;
 namespace fs = std::filesystem;
@@ -401,4 +402,59 @@ TEST_CASE("icons: presence_image prefers a usable hash, then the legacy title ic
     CHECK(presence_image(*e.icons, "https://x.test", none, sha) == hashed);
     e.icons->remove_hash(sha);
     CHECK(presence_image(*e.icons, "https://x.test", tid, sha) == legacy);
+}
+
+TEST_CASE("icons: sdk_reads_do_not_wait_for_writer") {
+    Env e;
+    const auto sha = e.icons->store(make_jpeg(256, 256, 1)).sha256;
+    REQUIRE(Icons::valid_sha256(sha));
+    e.seed_legacy(TID, std::string(64, 'b'));
+    const std::optional<std::string> tid = std::string(TID);
+    // An HTTP worker recording a use holds the Icons lock while it waits for the database.
+    StuckWriter w(e.root / "t.db", [&] { e.icons->touch(sha); });
+    std::string hashed, legacy;
+    const auto ms = elapsed_ms([&] {
+        hashed = presence_image(*e.icons, "https://x.test", tid, sha);
+        legacy = presence_image(*e.icons, "https://x.test", tid, std::nullopt);
+    });
+    const bool writer_was_waiting = w.waiting();
+    w.join();
+    CHECK(writer_was_waiting);
+    CHECK(ms < 100);
+    CHECK(hashed == "https://x.test/icons/" + sha + ".jpg");
+    CHECK(legacy == std::string("https://x.test/icons/") + TID + ".jpg");
+}
+
+TEST_CASE("icons: the reader lookups answer like usable and published_path") {
+    Env e;
+    const std::string unknown(64, 'a');
+    const auto sha = e.icons->store(make_jpeg(256, 256, 1)).sha256;
+    const auto same = [&](const std::string& h) { return e.icons->reader_usable(h) == e.icons->usable(h); };
+    const auto same_path = [&](const std::string& t) {
+        return e.icons->reader_published_path(t) == e.icons->published_path(t);
+    };
+    CHECK(same(unknown));
+    CHECK(same("../t"));
+    CHECK(e.icons->reader_usable(sha));
+    CHECK(same(sha));
+    CHECK_FALSE(e.icons->reader_published_path(TID));
+    CHECK(same_path(TID));
+    e.seed_legacy(TID, unknown);
+    CHECK(e.icons->reader_published_path("0100a0d02127e000"));
+    CHECK(same_path("0100a0d02127e000"));
+    CHECK(same_path("bad"));
+    CHECK_FALSE(e.icons->reader_published_path("bad"));
+    // A legacy title icon whose file is gone is not served.
+    const auto path = *e.icons->published_path(TID);
+    fs::rename(path, path + ".bak");
+    CHECK_FALSE(e.icons->reader_published_path(TID));
+    fs::rename(path + ".bak", path);
+    REQUIRE(e.icons->reader_published_path(TID));
+    // Blocking hides both the hash and a legacy icon with the same bytes.
+    e.icons->remove_hash(sha);
+    CHECK_FALSE(e.icons->reader_usable(sha));
+    CHECK(same(sha));
+    e.icons->remove_hash(unknown);
+    CHECK_FALSE(e.icons->reader_published_path(TID));
+    CHECK(same_path(TID));
 }

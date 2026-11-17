@@ -61,6 +61,10 @@ public:
 
     // Legacy title icons published before v0.4.0, served read-only. Nothing when its hash is blocked.
     std::optional<std::string> published_path(std::string_view title_id);
+    // usable() and published_path() for the SDK thread: on the database's read connection and
+    // without the Icons lock, so they never wait behind an HTTP-side write.
+    bool reader_usable(std::string_view sha256);
+    std::optional<std::string> reader_published_path(std::string_view title_id);
     // False when nothing is published for the title.
     bool admin_delete(std::string_view title_id);
 
@@ -81,7 +85,8 @@ private:
 };
 
 // The large image of a presence: the usable icon hash, else the legacy icon published for the
-// title, else "switch_logo". `base_url` has no trailing slash.
+// title, else "switch_logo". `base_url` has no trailing slash. For the SDK thread: it uses the
+// read connection.
 std::string presence_image(Icons& icons, const std::string& base_url, const std::optional<std::string>& title_id,
                            const std::optional<std::string>& icon);
 
