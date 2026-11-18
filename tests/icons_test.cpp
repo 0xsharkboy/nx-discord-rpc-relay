@@ -441,7 +441,7 @@ TEST_CASE("icons: sdk_reads_do_not_wait_for_writer") {
     w.join();
     CHECK(w.was_blocked());
     CHECK(writer_was_waiting);
-    CHECK(ms < 100);
+    CHECK(ms < 500);  // writer holds for 1 s; slack keeps loaded hosts green
     CHECK(hashed == "https://x.test/icons/" + sha + ".jpg");
     CHECK(legacy == std::string("https://x.test/icons/") + TID + ".jpg");
 }

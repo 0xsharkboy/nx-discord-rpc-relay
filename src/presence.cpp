@@ -145,7 +145,7 @@ void Presence::clear_all() {
     for (auto& [id, st] : states_) {
         if (st.cleared_at_ms) continue;
         clear_user(id, st, now);
-        dirty_.insert(id);
+        dirty_.insert(id);  // only flushed if a later tick runs
     }
 }
 

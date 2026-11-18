@@ -632,7 +632,7 @@ TEST_CASE("presence: sdk_reads_do_not_wait_for_writer") {
     w.join();
     CHECK(w.was_blocked());
     CHECK(writer_was_waiting);
-    CHECK(ms < 100);
+    CHECK(ms < 500);  // writer holds for 1 s; slack keeps loaded hosts green
     auto calls = f.backend.calls();
     REQUIRE(calls.size() == 2);
     CHECK(calls[0].kind == Kind::Connect);

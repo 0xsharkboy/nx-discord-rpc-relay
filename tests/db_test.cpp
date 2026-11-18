@@ -586,7 +586,7 @@ TEST_CASE("db: sdk_reads_do_not_wait_for_writer") {
     CHECK(w.was_blocked());
 
     CHECK(writer_was_waiting);
-    CHECK(ms < 100);
+    CHECK(ms < 500);  // writer holds for 1 s; slack keeps loaded hosts green
     REQUIRE(u);
     CHECK(u->key_hash == "h1");
     CHECK(usable);

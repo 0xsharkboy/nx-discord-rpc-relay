@@ -93,18 +93,23 @@ void SdkBackend::connect(const std::string& discord_id, const std::string& acces
     Entry entry;
     entry.client = client;
     clients_.emplace(discord_id, std::move(entry));
-    client->UpdateToken(discordpp::AuthorizationTokenType::Bearer, access_token,
-                        guarded([this, discord_id, raw](discordpp::ClientResult r) {
-                            Entry* e = active(discord_id, raw);
-                            if (!e) return;
-                            if (r.Successful()) {
-                                e->client->Connect();
-                                return;
-                            }
-                            std::cerr << "relay: token update for " << discord_id << " failed: " << r.Error()
-                                      << '\n';
-                            lost(discord_id, r.Status() == discordpp::HttpStatusCode::Unauthorized);
-                        }));
+    try {
+        client->UpdateToken(discordpp::AuthorizationTokenType::Bearer, access_token,
+                            guarded([this, discord_id, raw](discordpp::ClientResult r) {
+                                Entry* e = active(discord_id, raw);
+                                if (!e) return;
+                                if (r.Successful()) {
+                                    e->client->Connect();
+                                    return;
+                                }
+                                std::cerr << "relay: token update for " << discord_id
+                                          << " failed: " << r.Error() << '\n';
+                                lost(discord_id, r.Status() == discordpp::HttpStatusCode::Unauthorized);
+                            }));
+    } catch (...) {
+        clients_.erase(discord_id);  // do not leave a client that never got a token
+        throw;
+    }
 }
 
 void SdkBackend::set(const std::string& discord_id, const ActivitySpec& spec) {
