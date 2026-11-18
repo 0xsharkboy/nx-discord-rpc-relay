@@ -309,6 +309,26 @@ TEST_CASE("icons: cleanup_spares_in_use_and_recent") {
     CHECK_FALSE(e.icons->usable(a));
 }
 
+// The row goes before the file, so a reader never finds a usable row whose file is gone.
+TEST_CASE("icons: cleanup keeps the file when its row cannot be deleted") {
+    Env e;
+    const auto a = e.icons->store(make_jpeg(256, 256, 1)).sha256;
+    e.clock += kIconLifetimeS + 10;
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open((e.root / "t.db").string().c_str(), &raw) == SQLITE_OK);
+    const int rc = sqlite3_exec(raw,
+                                "CREATE TRIGGER no_delete BEFORE DELETE ON icon_files "
+                                "BEGIN SELECT RAISE(ABORT, 'no delete'); END",
+                                nullptr, nullptr, nullptr);
+    sqlite3_close(raw);
+    REQUIRE(rc == SQLITE_OK);
+
+    CHECK_THROWS(e.icons->cleanup({}));
+    CHECK(e.icons->usable(a));
+    CHECK(fs::exists(e.hash_file(a)));
+    CHECK(e.icons->hash_path(a));
+}
+
 TEST_CASE("icons: remove_hash_blocks_and_deletes") {
     Env e;
     auto jpg = make_jpeg(256, 256, 1);
@@ -419,6 +439,7 @@ TEST_CASE("icons: sdk_reads_do_not_wait_for_writer") {
     });
     const bool writer_was_waiting = w.waiting();
     w.join();
+    CHECK(w.was_blocked());
     CHECK(writer_was_waiting);
     CHECK(ms < 100);
     CHECK(hashed == "https://x.test/icons/" + sha + ".jpg");

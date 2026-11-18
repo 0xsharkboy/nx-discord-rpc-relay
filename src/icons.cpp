@@ -189,12 +189,14 @@ size_t Icons::cleanup(const std::unordered_set<std::string>& in_use) {
     size_t removed = 0;
     for (const auto& hash : db_.icon_files_unused_since(now - kIconLifetimeS)) {
         if (in_use.contains(hash)) continue;
+        // The row first: reader_usable() takes no Icons lock, and must never find a row whose file
+        // is already gone. A file left behind by a failed remove is only wasted space.
+        db_.delete_icon_file(hash);
         // Only well formed names reach the disk.
         if (valid_sha256(hash)) {
             std::error_code ec;
             fs::remove(hash_file(hash), ec);
         }
-        db_.delete_icon_file(hash);
         ++removed;
     }
     std::erase_if(touched_, [now](const auto& kv) { return now - kv.second >= kTouchEveryS; });

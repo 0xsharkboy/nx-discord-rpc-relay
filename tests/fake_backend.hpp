@@ -33,9 +33,12 @@ public:
     void clear(const std::string& id) override { record({Kind::Clear, id, {}, std::nullopt}); }
     void disconnect(const std::string& id) override { record({Kind::Disconnect, id, {}, std::nullopt}); }
     bool throw_on_update_token = false;
+    // Throws something that is not a std::exception.
+    bool throw_non_std_on_update_token = false;
 
     void update_token(const std::string& id, const std::string& token) override {
         if (throw_on_update_token) throw std::runtime_error("backend failure");
+        if (throw_non_std_on_update_token) throw 42;
         record({Kind::UpdateToken, id, token, std::nullopt});
     }
     void run_callbacks() override {

@@ -583,6 +583,7 @@ TEST_CASE("db: sdk_reads_do_not_wait_for_writer") {
     });
     const bool writer_was_waiting = w.waiting();
     w.join();
+    CHECK(w.was_blocked());
 
     CHECK(writer_was_waiting);
     CHECK(ms < 100);

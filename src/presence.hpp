@@ -92,6 +92,8 @@ private:
     static std::optional<int64_t> next_due(const UserState& st);
     void reschedule(const std::string& id, UserState& st);
     void unschedule(const std::string& id, UserState& st);
+    // Steps the user again at `at` whatever next_due says; for a step that threw.
+    void schedule_at(const std::string& id, int64_t at);
     void clear_user(const std::string& id, UserState& st, int64_t now);
     void forget(const std::string& id);
     void connection_lost(const std::string& id, bool auth_failed);

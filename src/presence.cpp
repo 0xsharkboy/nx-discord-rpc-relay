@@ -19,6 +19,8 @@ constexpr int64_t kIdleClearMs = 150000;
 constexpr int64_t kDisconnectAfterClearMs = 60000;
 constexpr int64_t kReconnectIntervalMs = 30000;
 constexpr int64_t kStartJitterS = 2;
+// A step that throws is tried again this much later, not on every tick (one log line per tick).
+constexpr int64_t kFailedStepRetryMs = 1000;
 
 // Heartbeats recompute the start from a fresh elapsed value, so it drifts by a second or so.
 bool same_activity(const ActivitySpec& a, const std::optional<ActivitySpec>& b) {
@@ -97,6 +99,8 @@ void Presence::tick() {
             apply(c, now);
         } catch (const std::exception& e) {
             std::cerr << "relay: presence command for " << c.key << " failed: " << e.what() << '\n';
+        } catch (...) {
+            std::cerr << "relay: presence command for " << c.key << " failed\n";
         }
     }
     // Collected before any step, so a due time at or before now is stepped once, not in a loop.
@@ -120,11 +124,10 @@ void Presence::tick() {
                 states_.erase(it);
             }
         } catch (const std::exception& e) {
-            // Retried at the next tick, as when every user was stepped on every tick.
-            dirty_.insert(id);
+            schedule_at(id, now + kFailedStepRetryMs);
             std::cerr << "relay: presence step for " << id << " failed: " << e.what() << '\n';
         } catch (...) {
-            dirty_.insert(id);
+            schedule_at(id, now + kFailedStepRetryMs);
             std::cerr << "relay: presence step for " << id << " failed\n";
         }
     }
@@ -310,6 +313,15 @@ void Presence::unschedule(const std::string& id, UserState& st) {
     if (!st.due_ms) return;
     schedule_.erase({*st.due_ms, id});
     st.due_ms.reset();
+}
+
+void Presence::schedule_at(const std::string& id, int64_t at) {
+    // Looked up again: the step that threw may have left the user in any state.
+    auto it = states_.find(id);
+    if (it == states_.end()) return;
+    unschedule(id, it->second);
+    schedule_.emplace(at, id);
+    it->second.due_ms = at;
 }
 
 void Presence::forget(const std::string& id) {

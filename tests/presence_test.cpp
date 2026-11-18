@@ -608,6 +608,21 @@ TEST_CASE("presence: a failing command does not lose the commands queued after i
     CHECK(f.presence->current("43")->name == "Mario");
 }
 
+TEST_CASE("presence: a command throwing a non-standard exception does not lose the ones behind it") {
+    Fixture f;
+    f.put("42", "Zelda");
+    f.presence->tick();
+    f.backend.reset();
+    f.backend.throw_non_std_on_update_token = true;
+    f.presence->token_refreshed("42");
+    f.put("43", "Mario");
+    const auto callbacks = f.backend.run_callbacks_count();
+    CHECK_NOTHROW(f.presence->tick());
+    CHECK(f.backend.calls(Kind::Connect, "43").size() == 1);
+    CHECK(f.presence->current("43")->name == "Mario");
+    CHECK(f.backend.run_callbacks_count() == callbacks + 1);
+}
+
 TEST_CASE("presence: sdk_reads_do_not_wait_for_writer") {
     Fixture f;
     f.put("42", "Zelda");
@@ -615,6 +630,7 @@ TEST_CASE("presence: sdk_reads_do_not_wait_for_writer") {
     const auto ms = elapsed_ms([&] { f.presence->tick(); });
     const bool writer_was_waiting = w.waiting();
     w.join();
+    CHECK(w.was_blocked());
     CHECK(writer_was_waiting);
     CHECK(ms < 100);
     auto calls = f.backend.calls();
@@ -781,7 +797,7 @@ TEST_CASE("presence: icons_changed steps only users whose image changed") {
     CHECK(f.presence->step_count() - start == 1);
 }
 
-TEST_CASE("presence: a failing step does not stop the others and is retried at the next tick") {
+TEST_CASE("presence: a failing step does not stop the others and is retried 1 s later") {
     Fixture f;
     f.backend.throw_on_set_for = "42";
     f.put("42", "Zelda");
@@ -790,9 +806,18 @@ TEST_CASE("presence: a failing step does not stop the others and is retried at t
     CHECK(f.presence->current("43")->name == "Mario");
     CHECK_FALSE(f.presence->current("42"));
     CHECK(f.backend.run_callbacks_count() == 1);
-    // No new command: the failed user is stepped again on its own.
-    f.backend.throw_on_set_for.clear();
+    // Not on every tick: a user that keeps failing would log 100 lines a second.
+    const auto steps = f.presence->step_count();
+    for (int i = 0; i < 99; ++i) f.advance(10);
+    CHECK(f.presence->step_count() == steps);
+    // No new command: the failed user is stepped again on its own, 1 s after the failure.
     f.advance(10);
+    CHECK(f.presence->step_count() == steps + 1);
+    CHECK(f.backend.calls(Kind::Set, "42").empty());
+    f.backend.throw_on_set_for.clear();
+    f.advance(999);
+    CHECK(f.backend.calls(Kind::Set, "42").empty());
+    f.advance(1);
     auto sets = f.backend.calls(Kind::Set, "42");
     REQUIRE(sets.size() == 1);
     CHECK(f.presence->current("42")->name == "Zelda");
