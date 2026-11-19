@@ -1232,7 +1232,7 @@ TEST_CASE("api: badge true shows the badge, absent or false does not, anything e
         CHECK(off->status == 204);
         f.presence->tick();
         auto now_sets = f.backend.calls(Kind::Set, "42");
-        if (!now_sets.empty()) CHECK(now_sets.back().spec->small_image.empty());
+        for (const auto& s : now_sets) CHECK(s.spec->small_image.empty());
         REQUIRE(f.presence->current("42"));
         CHECK(f.presence->current("42")->small_image.empty());
     }

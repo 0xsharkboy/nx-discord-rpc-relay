@@ -218,3 +218,21 @@ TEST_CASE("load_config: BADGE_URL must be an https URL of at most 256 characters
         CHECK(std::get<std::string>(r).find(bad) == std::string::npos);
     }
 }
+
+TEST_CASE("load_config: BADGE_URL of exactly 256 characters is accepted, PUBLIC_BASE_URL is capped at 200") {
+    auto env = full();
+    const std::string at_limit = "https://" + std::string(248, 'a');
+    REQUIRE(at_limit.size() == 256);
+    env["BADGE_URL"] = at_limit;
+    auto r = load(env);
+    REQUIRE(std::holds_alternative<Config>(r));
+    CHECK(std::get<Config>(r).badge_url == at_limit);
+
+    env = full();
+    env["PUBLIC_BASE_URL"] = "https://" + std::string(192, 'a');
+    REQUIRE(std::holds_alternative<Config>(load(env)));
+    env["PUBLIC_BASE_URL"] = "https://" + std::string(193, 'a');
+    auto too_long = load(env);
+    REQUIRE(std::holds_alternative<std::string>(too_long));
+    CHECK(std::get<std::string>(too_long).find("PUBLIC_BASE_URL") != std::string::npos);
+}

@@ -58,9 +58,10 @@ std::variant<Config, std::string> load_config(
     else std::copy(key->begin(), key->end(), c.token_key.begin());
 
     constexpr std::string_view https = "https://";
+    // Image URLs built on it (icons, badge) must stay within Discord's 300 characters.
     if (c.public_base_url.rfind(https, 0) != 0 || c.public_base_url.size() == https.size() ||
-        c.public_base_url.back() == '/')
-        invalid.emplace_back("PUBLIC_BASE_URL must be an https URL without a trailing slash");
+        c.public_base_url.back() == '/' || c.public_base_url.size() > 200)
+        invalid.emplace_back("PUBLIC_BASE_URL must be an https URL of at most 200 characters without a trailing slash");
 
     c.listen_host = "0.0.0.0";
     if (auto addr = get("LISTEN_ADDR")) {

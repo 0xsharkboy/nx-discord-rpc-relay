@@ -62,8 +62,11 @@ set_target_properties(discord_sdk PROPERTIES
 # The badge shown next to presences (GET /badge.png) is compiled in, so the image needs no data file.
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/assets/badge.png BADGE_HEX HEX)
 string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," BADGE_BYTES "${BADGE_HEX}")
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/badge_png.cpp
+# Written to a temporary file and copied only when it changed, so a reconfigure does not rebuild it.
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/badge_png.cpp.tmp
     "// Generated from src/assets/badge.png.\n#include \"badge_png.hpp\"\nnamespace relay {\nconst unsigned char kBadgePng[] = {${BADGE_BYTES}};\nconst std::size_t kBadgePngSize = sizeof(kBadgePng);\n}  // namespace relay\n")
+file(COPY_FILE ${CMAKE_CURRENT_BINARY_DIR}/generated/badge_png.cpp.tmp ${CMAKE_CURRENT_BINARY_DIR}/generated/badge_png.cpp
+     ONLY_IF_DIFFERENT)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/assets/badge.png)
 
 add_library(relay_core STATIC

@@ -4,8 +4,8 @@ This guide runs your own relay and points your consoles at it. You need:
 
 - a Linux x86-64 server with Docker and Docker Compose;
 - a domain name served over HTTPS by a reverse proxy. Consoles only accept an `https://` relay
-  URL, and Discord loads the title icons from `PUBLIC_BASE_URL/icons/...`, so the relay must be
-  reachable from the internet;
+  URL, and Discord loads the title icons from `PUBLIC_BASE_URL/icons/...` and the badge from
+  `PUBLIC_BASE_URL/badge.png`, so the relay must be reachable from the internet;
 - a Discord account to create the Discord application.
 
 ## 1. Create the Discord application
@@ -85,7 +85,7 @@ and fill it in, in the directory holding `compose.yml`. Keep `relay.env` readabl
 | `DISCORD_CLIENT_ID` | yes | The application ID (a decimal number) |
 | `DISCORD_CLIENT_SECRET` | yes | The application's client secret |
 | `TOKEN_ENC_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Encrypts the stored Discord tokens |
-| `PUBLIC_BASE_URL` | yes | The relay's public URL, `https://`, no trailing slash. Icons are served from it |
+| `PUBLIC_BASE_URL` | yes | The relay's public URL, `https://`, no trailing slash, at most 200 characters. Icons and the badge are served from it |
 | `ADMIN_KEY` | no | Admin key for icon moderation (`DELETE /v1/icons/{hash or title_id}`) and for icon uploads without a rate limit, see [protocol.md](protocol.md) |
 | `TRUST_PROXY` | no | `true` to key the rate limits on the first `X-Forwarded-For` hop, default `false` (the example sets `true`) |
 | `LISTEN_ADDR` | no | `host:port` to listen on inside the container, default `0.0.0.0:8080` |
