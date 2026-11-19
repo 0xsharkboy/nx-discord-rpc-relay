@@ -1091,9 +1091,11 @@ TEST_CASE("api: outdated_console_gets_426") {
     check_outdated(f.cli->Post("/v1/link/whatever/poll", ua(old), "", "text/plain"));
     check_outdated(f.cli->Put("/v1/icons/" + std::string(kTid), ua_bearer(old, key), make_jpeg(256, 256, 1), "image/jpeg"));
     check_outdated(f.cli->Get("/v1/nothing-here", ua(old)));
-    // Larger than the payload limit: still the 426, not a 413.
-    check_outdated(f.cli->Put("/v1/icons/" + std::string(kTid), ua_bearer(old, key),
-                              std::string(kMaxPayloadBytes + 1, 'x'), "image/jpeg"));
+    // Larger than the payload limit: never a 413. The 426 path does not read the body, so the
+    // close may reset the connection while the client is still writing: a transport error is fine.
+    if (auto big = f.cli->Put("/v1/icons/" + std::string(kTid), ua_bearer(old, key),
+                              std::string(kMaxPayloadBytes + 1, 'x'), "image/jpeg"))
+        check_outdated(big);
     CHECK_FALSE(f.presence->current("42").has_value());
     // The key still works from an up to date console.
     auto me = f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", key));
@@ -1168,14 +1170,14 @@ TEST_CASE("api: keyed requests are counted per version, unkeyed and refused ones
     auto alice = f.link("42", "alice");
     auto bob = f.link("43", "bob");
     // The link flow itself carried the test client's User-Agent and is not counted.
-    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", alice));
-    f.cli->Put("/v1/presence", ua_bearer("nx-discord-rpc/0.6.0", alice), json{{"name", "Zelda"}}.dump(),
-               "application/json");
-    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", bob));
-    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.7.0", bob));
-    f.cli->Get("/v1/me", ua_bearer("curl/8.0", bob));
-    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.5.0", bob));  // refused
-    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", "wrong-key"));
-    f.cli->Post("/v1/link", ua("nx-discord-rpc/0.6.0"), "", "text/plain");
+    REQUIRE(f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", alice)));
+    REQUIRE(f.cli->Put("/v1/presence", ua_bearer("nx-discord-rpc/0.6.0", alice), json{{"name", "Zelda"}}.dump(),
+                       "application/json"));
+    REQUIRE(f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", bob)));
+    REQUIRE(f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.7.0", bob)));
+    REQUIRE(f.cli->Get("/v1/me", ua_bearer("curl/8.0", bob)));
+    REQUIRE(f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.5.0", bob)));  // refused
+    REQUIRE(f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", "wrong-key")));
+    REQUIRE(f.cli->Post("/v1/link", ua("nx-discord-rpc/0.6.0"), "", "text/plain"));
     CHECK(f.version_counts.drain_line() == "relay: client versions in the last 24 h: 0.7.0=1 0.6.0=2 other=1");
 }

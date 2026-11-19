@@ -81,7 +81,8 @@ The Discord Social SDK also keeps its own files on the server, managed by the SD
   restart.
 - **Logs**: the relay logs one line per request (method, path, status, duration) without IP
   addresses, headers, keys, tokens or request bodies. Some error messages name the Discord user id
-  concerned. The logs are rotated at three files of 10 MB each.
+  concerned. Once a day the relay also logs how many distinct accounts used each console version,
+  as totals only, with nothing per account. The logs are rotated at three files of 10 MB each.
 
 ## What is not collected
 
