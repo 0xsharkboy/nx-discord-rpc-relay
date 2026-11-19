@@ -22,6 +22,7 @@
 #include <stb_image_write.h>
 
 #include "api.hpp"
+#include "client_version.hpp"
 #include "crypto.hpp"
 #include "fake_backend.hpp"
 #include "fake_oauth.hpp"
@@ -92,6 +93,7 @@ struct Fixture {
     std::unique_ptr<Links> links;
     std::unique_ptr<Presence> presence;
     std::unique_ptr<RateLimiter> link_limiter, poll_limiter, icon_limiter, new_icon_limiter;
+    VersionCounts version_counts;
     std::mutex log_mu;
     std::vector<std::string> log_lines;
     std::unique_ptr<Deps> deps;
@@ -101,7 +103,7 @@ struct Fixture {
     std::unique_ptr<httplib::Client> cli;
 
     explicit Fixture(bool trust_proxy = false, bool with_admin = true, int64_t max_icon_files = kDefaultMaxIconFiles,
-                     int new_icons_per_day = 50) {
+                     int new_icons_per_day = 50, std::optional<Version> min_client_version = std::nullopt) {
         static std::atomic<int> n{0};
         root = fs::temp_directory_path() /
                ("relay_api_test_" + std::to_string(::getpid()) + "_" + std::to_string(n++));
@@ -112,6 +114,7 @@ struct Fixture {
         cfg.token_key.fill(7);
         if (with_admin) cfg.admin_key = kAdminKey;
         cfg.trust_proxy = trust_proxy;
+        cfg.min_client_version = min_client_version;
 
         auto now_ms = [this] { return now.load(); };
         db = Db::open((root / "relay.db").string());
@@ -136,7 +139,7 @@ struct Fixture {
                 std::lock_guard lk(log_mu);
                 log_lines.push_back(line);
             },
-            [this] { return now.load() / 1000; }});
+            [this] { return now.load() / 1000; }, &version_counts});
         register_routes(svr, *deps);
         port = svr.bind_to_any_port("127.0.0.1");
         REQUIRE(port > 0);
@@ -1042,4 +1045,137 @@ TEST_CASE("api: a database error on the presence icon still shows the presence")
         CHECK(body_of(r) == json{{"need_icon", false}});
         CHECK(f.shown_image() == "switch_logo");
     }
+}
+
+namespace {
+// A fixture whose relay refuses consoles older than 0.6.0.
+struct MinFixture : Fixture {
+    MinFixture() : Fixture(false, true, kDefaultMaxIconFiles, 50, Version{0, 6, 0}) {}
+};
+
+httplib::Headers ua(const std::string& user_agent) { return {{"User-Agent", user_agent}}; }
+
+httplib::Headers ua_bearer(const std::string& user_agent, const std::string& key) {
+    return {{"User-Agent", user_agent}, {"Authorization", "Bearer " + key}};
+}
+
+void check_outdated(const httplib::Result& r) {
+    check_error(r, 426, "client_outdated");
+    CHECK(body_of(r).value("min_version", "") == "0.6.0");
+}
+}  // namespace
+
+TEST_CASE("api: min_version_unset_serves_everyone") {
+    Fixture f;
+    auto key = f.link();
+    auto me = f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.0.1", key));
+    REQUIRE(me);
+    CHECK(me->status == 200);
+    auto start = f.cli->Post("/v1/link", ua("nx-discord-rpc/0.0.1"), "", "text/plain");
+    REQUIRE(start);
+    CHECK(start->status == 200);
+}
+
+TEST_CASE("api: outdated_console_gets_426") {
+    MinFixture f;
+    auto key = f.link();
+    const std::string old = "nx-discord-rpc/0.5.0";
+    // Before any other check: no key, a bad key, a bad body, an unknown route.
+    check_outdated(f.cli->Get("/v1/me", ua(old)));
+    check_outdated(f.cli->Get("/v1/me", ua_bearer(old, key)));
+    check_outdated(f.cli->Delete("/v1/me", ua_bearer(old, key)));
+    check_outdated(f.cli->Put("/v1/presence", ua_bearer(old, key), json{{"name", "Zelda"}}.dump(), "application/json"));
+    check_outdated(f.cli->Put("/v1/presence", ua_bearer(old, "wrong"), "not json", "application/json"));
+    check_outdated(f.cli->Delete("/v1/presence", ua_bearer(old, key)));
+    check_outdated(f.cli->Post("/v1/link", ua(old), "", "text/plain"));
+    check_outdated(f.cli->Post("/v1/link/whatever/poll", ua(old), "", "text/plain"));
+    check_outdated(f.cli->Put("/v1/icons/" + std::string(kTid), ua_bearer(old, key), make_jpeg(256, 256, 1), "image/jpeg"));
+    check_outdated(f.cli->Get("/v1/nothing-here", ua(old)));
+    // Larger than the payload limit: still the 426, not a 413.
+    check_outdated(f.cli->Put("/v1/icons/" + std::string(kTid), ua_bearer(old, key),
+                              std::string(kMaxPayloadBytes + 1, 'x'), "image/jpeg"));
+    CHECK_FALSE(f.presence->current("42").has_value());
+    // The key still works from an up to date console.
+    auto me = f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", key));
+    REQUIRE(me);
+    CHECK(me->status == 200);
+    // Refusals log like any request, with no version.
+    for (const auto& line : f.logs()) CHECK(line.find("0.5.0") == std::string::npos);
+}
+
+TEST_CASE("api: foreign_user_agent_is_served") {
+    MinFixture f;
+    auto key = f.link();
+    for (auto agent : {"cpp-httplib/0.18.7", "curl/8.0.1", "my-switch-client/0.1.0", "NX-DISCORD-RPC/0.1.0",
+                       "nx-discord-rpc-fork/0.1.0"}) {
+        auto me = f.cli->Get("/v1/me", ua_bearer(agent, key));
+        REQUIRE(me);
+        CHECK_MESSAGE(me->status == 200, agent);
+    }
+    // No User-Agent at all.
+    httplib::Client raw("127.0.0.1", f.port);
+    raw.set_default_headers({});
+    auto me = raw.Get("/v1/me", bearer(key));
+    REQUIRE(me);
+    CHECK(me->status == 200);
+}
+
+TEST_CASE("api: unparsable_version_is_served") {
+    MinFixture f;
+    auto key = f.link();
+    for (auto agent : {"nx-discord-rpc/", "nx-discord-rpc/0.5", "nx-discord-rpc/0.5.0.1", "nx-discord-rpc/0.5.0-beta",
+                       "nx-discord-rpc/0.5.0 (Switch)", "nx-discord-rpc/99999999999.0.0", "nx-discord-rpc/abc"}) {
+        auto me = f.cli->Get("/v1/me", ua_bearer(agent, key));
+        REQUIRE(me);
+        CHECK_MESSAGE(me->status == 200, agent);
+    }
+}
+
+TEST_CASE("api: healthz_and_icons_never_refused") {
+    MinFixture f;
+    const std::string old = "nx-discord-rpc/0.1.0";
+    auto h = f.cli->Get("/healthz", ua(old));
+    REQUIRE(h);
+    CHECK(h->status == 200);
+    CHECK(h->body == "ok");
+
+    const auto jpeg = make_jpeg(256, 256, 3);
+    REQUIRE(f.icons->store(jpeg).result == StoreResult::Stored);
+    auto icon = f.cli->Get("/icons/" + sha256_hex(jpeg) + ".jpg", ua(old));
+    REQUIRE(icon);
+    CHECK(icon->status == 200);
+    CHECK(icon->get_header_value("Content-Type") == "image/jpeg");
+    auto missing = f.cli->Get("/icons/" + std::string(64, 'a') + ".jpg", ua(old));
+    REQUIRE(missing);
+    CHECK(missing->status == 404);
+}
+
+TEST_CASE("api: newer_and_equal_versions_served") {
+    MinFixture f;
+    auto key = f.link();
+    for (auto agent : {"nx-discord-rpc/0.6.0", "nx-discord-rpc/0.6.1", "nx-discord-rpc/0.10.0", "nx-discord-rpc/1.0.0"}) {
+        auto me = f.cli->Get("/v1/me", ua_bearer(agent, key));
+        REQUIRE(me);
+        CHECK_MESSAGE(me->status == 200, agent);
+        auto p = f.cli->Put("/v1/presence", ua_bearer(agent, key), json{{"name", "Zelda"}}.dump(), "application/json");
+        REQUIRE(p);
+        CHECK_MESSAGE(p->status == 204, agent);
+    }
+}
+
+TEST_CASE("api: keyed requests are counted per version, unkeyed and refused ones are not") {
+    MinFixture f;
+    auto alice = f.link("42", "alice");
+    auto bob = f.link("43", "bob");
+    // The link flow itself carried the test client's User-Agent and is not counted.
+    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", alice));
+    f.cli->Put("/v1/presence", ua_bearer("nx-discord-rpc/0.6.0", alice), json{{"name", "Zelda"}}.dump(),
+               "application/json");
+    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", bob));
+    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.7.0", bob));
+    f.cli->Get("/v1/me", ua_bearer("curl/8.0", bob));
+    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.5.0", bob));  // refused
+    f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", "wrong-key"));
+    f.cli->Post("/v1/link", ua("nx-discord-rpc/0.6.0"), "", "text/plain");
+    CHECK(f.version_counts.drain_line() == "relay: client versions in the last 24 h: 0.7.0=1 0.6.0=2 other=1");
 }

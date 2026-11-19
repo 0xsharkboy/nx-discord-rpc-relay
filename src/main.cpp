@@ -20,6 +20,7 @@
 #include <httplib.h>
 
 #include "api.hpp"
+#include "client_version.hpp"
 #include "config.hpp"
 #include "db.hpp"
 #include "icons.hpp"
@@ -47,6 +48,8 @@ constexpr auto kTickEvery = 10ms;
 constexpr auto kRefreshEvery = 10min;
 // Daily maintenance: icon cleanup and the 90 day inactive account sweep.
 constexpr auto kMaintenanceEvery = 24h;
+// The client version counts cover one full window each: the first line comes a day after start.
+constexpr auto kVersionCountsEvery = 24h;
 // How long an unlinked account's tokens may wait before their revocation is sent.
 constexpr auto kRevokeEvery = 2s;
 constexpr auto kClearDrain = 1500ms;
@@ -94,9 +97,11 @@ void pump(IPresenceBackend& backend, std::chrono::milliseconds total) {
     }
 }
 
-void background_jobs(Refresher& refresher, Icons& icons, Links& links, Presence& presence, StopFlag& stop) {
+void background_jobs(Refresher& refresher, Icons& icons, Links& links, Presence& presence,
+                     VersionCounts& version_counts, StopFlag& stop) {
     auto next_refresh = std::chrono::steady_clock::now();
     auto next_expiry = next_refresh;
+    auto next_counts = next_refresh + kVersionCountsEvery;
     while (!stop.is_set()) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= next_refresh) {
@@ -120,7 +125,11 @@ void background_jobs(Refresher& refresher, Icons& icons, Links& links, Presence&
             }
             next_expiry = now + kMaintenanceEvery;
         }
-        stop.wait_for(std::min(next_refresh, next_expiry) - std::chrono::steady_clock::now());
+        if (now >= next_counts) {
+            std::cout << version_counts.drain_line() << std::endl;
+            next_counts = now + kVersionCountsEvery;
+        }
+        stop.wait_for(std::min({next_refresh, next_expiry, next_counts}) - std::chrono::steady_clock::now());
     }
 }
 
@@ -195,8 +204,9 @@ int main() {
     RateLimiter poll_limiter(kPollPerHour, kHourMs, unix_ms);
     RateLimiter icon_limiter(kIconPerHour, kHourMs, unix_ms);
     RateLimiter new_icon_limiter(kNewIconsPerDay, kDayMs, unix_ms);
+    VersionCounts version_counts;
     Deps deps{cfg, *db, icons, links, presence, link_limiter, poll_limiter, icon_limiter, new_icon_limiter,
-              nullptr, nullptr, unix_s};
+              nullptr, nullptr, unix_s, &version_counts};
 
     httplib::Server svr;
     register_routes(svr, deps);
@@ -206,6 +216,8 @@ int main() {
     }
     std::cout << "relay " << version() << " listening on " << cfg.listen_host << ':' << cfg.listen_port
               << std::endl;
+    if (cfg.min_client_version)
+        std::cout << "relay: refusing consoles older than " << to_string(*cfg.min_client_version) << std::endl;
 
     StopFlag stop;
     std::atomic<bool> listen_failed{false}, http_done{false}, jobs_done{false};
@@ -242,7 +254,7 @@ int main() {
     });
 
     std::thread jobs([&] {
-        background_jobs(refresher, icons, links, presence, stop);
+        background_jobs(refresher, icons, links, presence, version_counts, stop);
         jobs_done = true;
     });
 

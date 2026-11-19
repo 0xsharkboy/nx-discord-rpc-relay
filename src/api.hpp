@@ -7,6 +7,7 @@
 
 #include <httplib.h>
 
+#include "client_version.hpp"
 #include "config.hpp"
 #include "db.hpp"
 #include "icons.hpp"
@@ -30,6 +31,8 @@ struct Deps {
     std::function<int64_t()> monotonic_ms;  // request durations in the log
     std::function<void(const std::string& line)> log;
     std::function<int64_t()> unix_s;  // last_seen_at; defaults to the system clock
+    // Distinct keys per console version for the daily log line; nullptr counts nothing.
+    VersionCounts* version_counts = nullptr;
 };
 
 constexpr size_t kMaxPayloadBytes = 262144;

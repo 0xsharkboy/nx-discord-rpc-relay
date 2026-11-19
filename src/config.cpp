@@ -84,6 +84,11 @@ std::variant<Config, std::string> load_config(
         else invalid.emplace_back("TRUST_PROXY must be true or false");
     }
 
+    if (auto v = get("MIN_CLIENT_VERSION")) {
+        c.min_client_version = parse_version(*v);
+        if (!c.min_client_version) invalid.emplace_back("MIN_CLIENT_VERSION must be X.Y.Z, or empty for no minimum");
+    }
+
     c.data_dir = get("DATA_DIR").value_or("/data");
     c.admin_key = get("ADMIN_KEY");
 

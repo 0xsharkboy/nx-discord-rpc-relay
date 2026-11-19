@@ -165,3 +165,32 @@ TEST_CASE("load_config errors never contain secret values") {
     CHECK_FALSE(has(e, "super-admin-secret"));
     CHECK_FALSE(has(e, key_b64()));
 }
+
+TEST_CASE("load_config: min_client_version is unset by default or when empty") {
+    auto r = load(full());
+    REQUIRE(std::holds_alternative<Config>(r));
+    CHECK_FALSE(std::get<Config>(r).min_client_version.has_value());
+    auto env = full();
+    env["MIN_CLIENT_VERSION"] = "";
+    r = load(env);
+    REQUIRE(std::holds_alternative<Config>(r));
+    CHECK_FALSE(std::get<Config>(r).min_client_version.has_value());
+}
+
+TEST_CASE("load_config reads MIN_CLIENT_VERSION") {
+    auto env = full();
+    env["MIN_CLIENT_VERSION"] = "0.10.2";
+    auto r = load(env);
+    REQUIRE(std::holds_alternative<Config>(r));
+    CHECK(std::get<Config>(r).min_client_version == Version{0, 10, 2});
+}
+
+TEST_CASE("load_config: invalid_min_version_is_config_error") {
+    for (auto v : {"0.6", "v0.6.0", "0.6.0-beta", "0.6.0.1", "latest", " 0.6.0", "99999999999.0.0"}) {
+        auto env = full();
+        env["MIN_CLIENT_VERSION"] = v;
+        auto e = error_of(env);
+        CHECK_MESSAGE(has(e, "MIN_CLIENT_VERSION"), v);
+        CHECK_FALSE_MESSAGE(has(e, v), v);
+    }
+}

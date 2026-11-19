@@ -8,12 +8,16 @@
 #include <string>
 #include <variant>
 
+#include "client_version.hpp"
+
 namespace relay {
 
 struct Config {
     std::string client_id, client_secret, public_base_url, listen_host, data_dir;
     std::array<uint8_t, 32> token_key{};
     std::optional<std::string> admin_key;
+    // Consoles older than this get 426 on /v1/; unset refuses nobody.
+    std::optional<Version> min_client_version;
     int listen_port = 8080;
     bool trust_proxy = false;
 };

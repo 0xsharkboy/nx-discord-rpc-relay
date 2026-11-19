@@ -61,6 +61,7 @@ set_target_properties(discord_sdk PROPERTIES
 
 add_library(relay_core STATIC
     src/version.cpp
+    src/client_version.cpp
     src/config.cpp
     src/crypto.cpp
     src/db.cpp

@@ -1,6 +1,7 @@
 add_executable(relay_tests
     main.cpp
     config_test.cpp
+    client_version_test.cpp
     crypto_test.cpp
     db_test.cpp
     icons_test.cpp

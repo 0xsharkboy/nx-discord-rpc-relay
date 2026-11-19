@@ -101,8 +101,25 @@ std::optional<User> user_for(Deps& d, const std::optional<std::string>& token) {
 
 std::optional<User> require_user(Deps& d, const Request& req, Response& res) {
     auto user = user_for(d, bearer_token(req));
-    if (!user) send_error(res, 401, "unauthorized", "Missing or invalid API key");
+    if (!user) {
+        send_error(res, 401, "unauthorized", "Missing or invalid API key");
+        return user;
+    }
+    // Per version only: the key hashes stay in memory and only the totals are ever logged.
+    if (d.version_counts) {
+        if (auto v = parse_client_user_agent(req.get_header_value("User-Agent")))
+            d.version_counts->seen(*v, user->key_hash);
+        else
+            d.version_counts->seen_other(user->key_hash);
+    }
     return user;
+}
+
+// A console older than the configured minimum, by its own User-Agent. Any other client is served.
+bool outdated_console(const Deps& d, const Request& req) {
+    if (!d.config.min_client_version || !req.path.starts_with("/v1/")) return false;
+    auto v = parse_client_user_agent(req.get_header_value("User-Agent"));
+    return v && older(*v, *d.config.min_client_version);
 }
 
 std::string client_ip(const Deps& d, const Request& req) {
@@ -391,6 +408,17 @@ void register_routes(httplib::Server& svr, Deps& d) {
 
     svr.set_pre_routing_handler([&d](const Request& req, Response& res) {
         t_request_start = d.monotonic_ms();
+        // Before any other check, so an old console learns it must update whatever else is wrong.
+        // The body is never read; the connection closes after one request anyway.
+        if (outdated_console(d, req)) {
+            const auto min = to_string(*d.config.min_client_version);
+            send_json(res, 426,
+                      json{{"error", "client_outdated"},
+                           {"message", "This console's NX Discord RPC is too old for this relay, update to " + min +
+                                           " or newer"},
+                           {"min_version", min}});
+            return HandlerResponse::Handled;
+        }
         // This httplib version enforces the payload limit only on Content-Length bodies.
         if (req.has_header("Transfer-Encoding")) {
             send_error(res, 411, "length_required", "Send the body with a Content-Length header");
