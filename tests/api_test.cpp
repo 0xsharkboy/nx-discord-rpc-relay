@@ -1083,7 +1083,6 @@ TEST_CASE("api: outdated_console_gets_426") {
     // Before any other check: no key, a bad key, a bad body, an unknown route.
     check_outdated(f.cli->Get("/v1/me", ua(old)));
     check_outdated(f.cli->Get("/v1/me", ua_bearer(old, key)));
-    check_outdated(f.cli->Delete("/v1/me", ua_bearer(old, key)));
     check_outdated(f.cli->Put("/v1/presence", ua_bearer(old, key), json{{"name", "Zelda"}}.dump(), "application/json"));
     check_outdated(f.cli->Put("/v1/presence", ua_bearer(old, "wrong"), "not json", "application/json"));
     check_outdated(f.cli->Delete("/v1/presence", ua_bearer(old, key)));
@@ -1105,6 +1104,26 @@ TEST_CASE("api: outdated_console_gets_426") {
     for (const auto& line : f.logs()) CHECK(line.find("0.5.0") == std::string::npos);
 }
 
+TEST_CASE("api: outdated_console_can_always_unlink") {
+    MinFixture f;
+    auto key = f.link();
+    const std::string old = "nx-discord-rpc/0.5.0";
+    // DELETE /v1/me is checked like for any console: a missing or wrong key is a 401.
+    check_error(f.cli->Delete("/v1/me", ua(old)), 401, "unauthorized");
+    check_error(f.cli->Delete("/v1/me", ua_bearer(old, "wrong")), 401, "unauthorized");
+    // The rest of /v1/me and the other DELETE stay refused.
+    check_outdated(f.cli->Get("/v1/me", ua_bearer(old, key)));
+    check_outdated(f.cli->Delete("/v1/presence", ua_bearer(old, key)));
+    // A good key unlinks: the key stops working, whatever the version.
+    auto del = f.cli->Delete("/v1/me", ua_bearer(old, key));
+    REQUIRE(del);
+    CHECK(del->status == 204);
+    check_error(f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", key)), 401, "unauthorized");
+    check_error(f.cli->Delete("/v1/me", ua_bearer(old, key)), 401, "unauthorized");
+    f.links->flush_revocations();
+    CHECK(f.oauth.revoked.size() == 2);
+}
+
 TEST_CASE("api: foreign_user_agent_is_served") {
     MinFixture f;
     auto key = f.link();
@@ -1114,12 +1133,19 @@ TEST_CASE("api: foreign_user_agent_is_served") {
         REQUIRE(me);
         CHECK_MESSAGE(me->status == 200, agent);
     }
-    // No User-Agent at all.
-    httplib::Client raw("127.0.0.1", f.port);
-    raw.set_default_headers({});
-    auto me = raw.Get("/v1/me", bearer(key));
-    REQUIRE(me);
-    CHECK(me->status == 200);
+    // No User-Agent at all. httplib adds its own when the header is missing, so write the request.
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    REQUIRE(fd >= 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(f.port));
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) == 0);
+    const std::string req = "GET /v1/me HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + key + "\r\n\r\n";
+    REQUIRE(::send(fd, req.data(), req.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(req.size()));
+    auto got = raw_read(fd, 2);
+    ::close(fd);
+    CHECK(got.data.find("HTTP/1.1 200") == 0);
 }
 
 TEST_CASE("api: unparsable_version_is_served") {

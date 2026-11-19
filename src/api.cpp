@@ -116,8 +116,10 @@ std::optional<User> require_user(Deps& d, const Request& req, Response& res) {
 }
 
 // A console older than the configured minimum, by its own User-Agent. Any other client is served.
+// DELETE /v1/me is never refused, so any console can always delete its data.
 bool outdated_console(const Deps& d, const Request& req) {
     if (!d.config.min_client_version || !req.path.starts_with("/v1/")) return false;
+    if (req.method == "DELETE" && req.path == "/v1/me") return false;
     auto v = parse_client_user_agent(req.get_header_value("User-Agent"));
     return v && older(*v, *d.config.min_client_version);
 }
