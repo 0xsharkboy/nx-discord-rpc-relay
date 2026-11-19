@@ -61,6 +61,11 @@ image places at `/data/home`. Their content is managed by the SDK.
   The relay never writes a client IP to the database or to its logs.
 - **Pending links.** A link in progress lives in memory only. Once linked, the relay keeps the new
   API key in memory for 60 seconds so that a console can fetch it again after a dropped response.
+- **Which console version you use.** To count how many accounts still use each console version,
+  the relay keeps, in memory only, the hashes of the API keys seen with each version (read from
+  the console's `User-Agent`) over the current 24 hours. Once a day it logs the totals per version
+  and clears the sets; a restart clears them too. No version is written to the database or logged
+  for an account. Requests without a key (linking) are not counted.
 
 ## Token encryption
 
@@ -192,6 +197,9 @@ The relay writes to standard output and standard error only.
   concerned (a failed refresh, a dropped Discord connection, a presence update Discord refused,
   errors reported by the Social SDK).
 - **Maintenance:** the daily cleanup logs how many inactive accounts it deleted, without naming them.
+- **Client versions:** once a day, the number of distinct accounts per console version over the
+  last 24 hours, for example `relay: client versions in the last 24 h: 0.6.0=120 0.5.0=14 other=2`.
+  It names no account.
 
 How long these logs are kept depends on the host. With the Compose file in `deploy/`, Docker keeps at
 most three log files of 10 MB each and rotates older lines out.

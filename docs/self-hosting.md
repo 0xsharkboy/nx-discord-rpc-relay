@@ -90,6 +90,7 @@ and fill it in, in the directory holding `compose.yml`. Keep `relay.env` readabl
 | `TRUST_PROXY` | no | `true` to key the rate limits on the first `X-Forwarded-For` hop, default `false` (the example sets `true`) |
 | `LISTEN_ADDR` | no | `host:port` to listen on inside the container, default `0.0.0.0:8080` |
 | `DATA_DIR` | no | Data directory inside the container, default `/data` |
+| `MIN_CLIENT_VERSION` | no | Oldest console version served, `X.Y.Z`. Older consoles get `426 client_outdated` on every `/v1/` route and show that an update is required. Unset or empty: no minimum (the default). See [Client versions](#9-client-versions) |
 
 `PUBLISH_THRESHOLD` from earlier versions is no longer used: if it is still set, the relay ignores it
 and logs a line saying so.
@@ -149,3 +150,20 @@ reads the file at boot. Put the card back, start the console, then link the acco
 app: an API key only works with the relay that issued it.
 
 See [how-it-works.md](how-it-works.md) for what the relay stores and logs.
+
+## 9. Client versions
+
+Once a day, starting a day after it starts, the relay logs how many distinct accounts used each
+console version over the last 24 hours, for example:
+
+    relay: client versions in the last 24 h: 0.6.0=120 0.5.0=14 other=2
+
+`other` counts accounts whose requests came from a client that is not the official console, or
+whose User-Agent carries no `X.Y.Z` version. Only requests with a valid API key are counted, and
+the counts are held in memory only: a restart starts a new window.
+
+Leave `MIN_CLIENT_VERSION` unset unless a breaking change requires it. Before raising it, follow
+the [compatibility policy](protocol.md#compatibility-policy) and check these lines: every console
+below the new minimum is told to update and stops showing its presence until it does. A console
+that is refused is no longer counted, since it is turned away before its key is checked. On start,
+the relay logs the minimum it enforces.

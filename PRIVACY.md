@@ -52,6 +52,10 @@ Held in memory only, never written to the database:
 - **Icon upload counters**, keyed by your API key's hash, for the rate limits on icon uploads,
   including the daily limit on new images. They record no image and no title.
 - **Links in progress**, and a newly issued API key for 60 seconds after linking.
+- **Client version counts**: for each console version (taken from the `User-Agent` your console
+  sends), the set of API key hashes that used it in the current 24 hour window, so that the daily
+  log line can count distinct accounts per version. Only the totals per version are logged; no
+  version is ever logged or stored for an account.
 
 The Discord Social SDK also keeps its own files on the server, managed by the SDK.
 
@@ -73,6 +77,8 @@ The Discord Social SDK also keeps its own files on the server, managed by the SD
   console, and is lost from memory when the relay restarts.
 - **Rate limit entries** are dropped after about two hours of inactivity at most (about two days
   for the daily limit on new icons), and on restart.
+- **Client version counts** are cleared every 24 hours, after the daily totals are logged, and on
+  restart.
 - **Logs**: the relay logs one line per request (method, path, status, duration) without IP
   addresses, headers, keys, tokens or request bodies. Some error messages name the Discord user id
   concerned. The logs are rotated at three files of 10 MB each.

@@ -17,7 +17,8 @@ Rich Presence.
   it controls), and keep-alive through the public endpoint is not guaranteed. Clients must handle a
   closed connection and should simply open one connection per request, never relying on keep-alive.
 - Any request body over 262144 bytes is discarded unprocessed and refused with `413 too_large`,
-  before authentication or any other check.
+  before authentication or any other check except `426 client_outdated` (see
+  [Client version](#client-version)).
 - Lengths are counted in bytes of UTF-8, not characters.
 - Unknown JSON fields in request bodies are ignored. Clients must ignore unknown fields in
   responses.
@@ -32,6 +33,29 @@ Authorization: Bearer <api_key>
 
 The API key is 43 characters of base64url. Store it; the relay keeps only its hash and cannot show
 it again. A missing, malformed or unknown key gives `401 unauthorized`.
+
+### Client version
+
+The console sends its version in every request:
+
+```
+User-Agent: nx-discord-rpc/<X.Y.Z>
+```
+
+`X.Y.Z` is three decimal numbers, compared numerically (`0.10.0` is newer than `0.9.1`).
+
+A relay may set a minimum console version (`MIN_CLIENT_VERSION`, unset on the official relay). On
+every `/v1/` route, a request whose User-Agent is exactly `nx-discord-rpc/<X.Y.Z>` with a version
+older than that minimum gets `426 client_outdated`, before any other check (authentication, body,
+rate limits, even an unknown route):
+
+```json
+{"error": "client_outdated", "message": "<human readable text>", "min_version": "0.6.0"}
+```
+
+`min_version` is the oldest version the relay serves. Any other User-Agent, including ours with a
+version that is not `X.Y.Z`, is served as usual: third-party clients are never refused for their
+User-Agent. `GET /healthz` and `GET /icons/...` are never refused.
 
 ### Errors
 
@@ -58,6 +82,7 @@ Clients must branch on `error`, never on `message`.
 | 413 | `too_large` | Body over the route's limit |
 | 414 | `uri_too_long` | Request line too long |
 | 416 | `range_not_satisfiable` | Malformed or unsatisfiable `Range` header |
+| 426 | `client_outdated` | The console is older than the relay's minimum version, see [Client version](#client-version) |
 | 429 | `rate_limited` | Too many requests; see `Retry-After` |
 | 500 | `internal_error` | Relay fault |
 | 502 | `discord_unavailable` | Discord did not answer; retry later |
@@ -74,11 +99,25 @@ Clients must branch on `error`, never on `message`.
   `link_broken: true` in this state.
 - **429** and **5xx**: back off. When `Retry-After` (seconds) is present, wait at least that long;
   otherwise use exponential backoff starting at 5 s, capped at 5 min.
+- **426 `client_outdated`**: the console must be updated to `min_version` or newer. Tell the user,
+  stop sending presence and icons, and retry one request every 6 hours, since the operator may
+  lower the minimum.
 - Network errors: same as 5xx.
 - **404 `unknown_link`** while polling: the relay forgot the link, for example because it restarted
   (pending links live in memory only). Start again with `POST /v1/link`.
 - Any other **4xx**, including a code this document does not list: treat the request as failed and
   do not retry it unchanged. Back off on any **5xx**.
+
+## Compatibility policy
+
+- Changes inside `/v1` stay backward compatible: only new optional fields and new answers. A
+  console of any release keeps working with the current relay.
+- A breaking change ships as `/v2/` routes in a homebrew release. `/v1` keeps working for at least
+  3 months after that release, and this is announced in the release notes.
+- Only then may the operator set `MIN_CLIENT_VERSION` to the first release that speaks `/v2`, after
+  checking the daily client version counts in the relay log (see
+  [self-hosting.md](self-hosting.md#9-client-versions)). Consoles older than that minimum then get
+  `426 client_outdated` and show that an update is required.
 
 ## Rate limits
 
