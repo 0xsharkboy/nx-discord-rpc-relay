@@ -90,7 +90,7 @@ and fill it in, in the directory holding `compose.yml`. Keep `relay.env` readabl
 | `TRUST_PROXY` | no | `true` to key the rate limits on the first `X-Forwarded-For` hop, default `false` (the example sets `true`) |
 | `LISTEN_ADDR` | no | `host:port` to listen on inside the container, default `0.0.0.0:8080` |
 | `DATA_DIR` | no | Data directory inside the container, default `/data` |
-| `MIN_CLIENT_VERSION` | no | Oldest console version served, `X.Y.Z`. Older consoles get `426 client_outdated` on every `/v1/` route and show that an update is required. Unset or empty: no minimum (the default). See [Client versions](#9-client-versions) |
+| `MIN_CLIENT_VERSION` | no | Oldest console version served, `X.Y.Z`. Older consoles get `426 client_outdated` on every `/v1/` route except `DELETE /v1/me` (unlink) and stop showing their presence; from v0.6.0 they also show that an update is required, older ones are not told why. Unset or empty: no minimum (the default). See [Client versions](#9-client-versions) |
 
 `PUBLISH_THRESHOLD` from earlier versions is no longer used: if it is still set, the relay ignores it
 and logs a line saying so.
@@ -164,6 +164,11 @@ the counts are held in memory only: a restart starts a new window.
 
 Leave `MIN_CLIENT_VERSION` unset unless a breaking change requires it. Before raising it, follow
 the [compatibility policy](protocol.md#compatibility-policy) and check these lines: every console
-below the new minimum is told to update and stops showing its presence until it does. A console
-that is refused is no longer counted, since it is turned away before its key is checked. On start,
-the relay logs the minimum it enforces.
+below the new minimum stops showing its presence until it is updated. Consoles from v0.6.0 show
+that an update is required. Consoles v0.5.0 and older are not told why: their Status tab still
+says Linked and relay OK, Test connection reports "The relay refused the last update (error 426)",
+and linking again says "Something went wrong". Raise the minimum only once these lines show few
+consoles older than v0.6.0. Every console can still unlink (`DELETE /v1/me` is never refused).
+
+A console that is refused is no longer counted, since it is turned away before its key is checked,
+except when it unlinks. On start, the relay logs the minimum it enforces.

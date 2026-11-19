@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: 2026-11-17
+Last updated: 2026-11-19
 
 This policy covers the official NX Discord RPC relay at `https://nx-discord-rpc.0xsharkboy.dev`,
 used by the Discord application "NX RPC" and by the
@@ -116,7 +116,8 @@ Under the GDPR you have the right to access, correct and delete your data, to re
 its processing, to data portability, and to withdraw your consent.
 
 - **Delete your data:** use **Unlink** in the homebrew. It deletes your account row at once, clears
-  your presence and then revokes your Discord tokens.
+  your presence and then revokes your Discord tokens. Unlink always works, even from a version of
+  the homebrew the relay no longer serves.
 - **Revoke access in Discord:** remove "NX RPC" under User Settings > Authorized Apps. This stops
   the relay from acting for you, but only breaks the link: the stored data stays until you unlink,
   link again, or the account is deleted after 90 days of inactivity.

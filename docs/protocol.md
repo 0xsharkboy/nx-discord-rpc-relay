@@ -45,9 +45,9 @@ User-Agent: nx-discord-rpc/<X.Y.Z>
 `X.Y.Z` is three decimal numbers, compared numerically (`0.10.0` is newer than `0.9.1`).
 
 A relay may set a minimum console version (`MIN_CLIENT_VERSION`, unset on the official relay). On
-every `/v1/` route, a request whose User-Agent is exactly `nx-discord-rpc/<X.Y.Z>` with a version
-older than that minimum gets `426 client_outdated`, before any other check (authentication, body,
-rate limits, even an unknown route):
+every `/v1/` route except `DELETE /v1/me`, a request whose User-Agent is exactly
+`nx-discord-rpc/<X.Y.Z>` with a version older than that minimum gets `426 client_outdated`, before
+any other check (authentication, body, rate limits, even an unknown route):
 
 ```json
 {"error": "client_outdated", "message": "<human readable text>", "min_version": "0.6.0"}
@@ -55,7 +55,8 @@ rate limits, even an unknown route):
 
 `min_version` is the oldest version the relay serves. Any other User-Agent, including ours with a
 version that is not `X.Y.Z`, is served as usual: third-party clients are never refused for their
-User-Agent. `GET /healthz` and `GET /icons/...` are never refused.
+User-Agent. `GET /healthz` and `GET /icons/...` are never refused, and neither is
+`DELETE /v1/me`, so any console can always unlink and delete its data.
 
 ### Errors
 
@@ -99,9 +100,11 @@ Clients must branch on `error`, never on `message`.
   `link_broken: true` in this state.
 - **429** and **5xx**: back off. When `Retry-After` (seconds) is present, wait at least that long;
   otherwise use exponential backoff starting at 5 s, capped at 5 min.
-- **426 `client_outdated`**: the console must be updated to `min_version` or newer. Tell the user,
-  stop sending presence and icons, and retry one request every 6 hours, since the operator may
-  lower the minimum.
+- **426 `client_outdated`**: the console must be updated to `min_version` or newer. Tell the user
+  and stop sending presence and icons. Retry one presence request every 6 hours, since the
+  operator may lower the minimum; a retry that meets a network error, a 429 or a 5xx backs off as
+  usual. Requests the user asks for, such as linking or unlinking, are still sent; `DELETE /v1/me`
+  is never refused.
 - Network errors: same as 5xx.
 - **404 `unknown_link`** while polling: the relay forgot the link, for example because it restarted
   (pending links live in memory only). Start again with `POST /v1/link`.
@@ -116,8 +119,13 @@ Clients must branch on `error`, never on `message`.
   3 months after that release, and this is announced in the release notes.
 - Only then may the operator set `MIN_CLIENT_VERSION` to the first release that speaks `/v2`, after
   checking the daily client version counts in the relay log (see
-  [self-hosting.md](self-hosting.md#9-client-versions)). Consoles older than that minimum then get
-  `426 client_outdated` and show that an update is required.
+  [self-hosting.md](https://github.com/0xsharkboy/nx-discord-rpc-relay/blob/main/docs/self-hosting.md#9-client-versions)).
+  Consoles older than that minimum then get `426 client_outdated`. From v0.6.0, a refused console
+  shows that an update is required. Consoles v0.5.0 and older do not know this answer: their
+  presence only stops showing on Discord, their Status tab still says Linked and relay OK, Test
+  connection reports "The relay refused the last update (error 426)", and linking again says
+  "Something went wrong". They can still unlink. Raise the minimum only once the daily counts show
+  few consoles older than v0.6.0.
 
 ## Rate limits
 
@@ -230,7 +238,8 @@ Auth: API key. Unlinks the account: the key stops working at once, the presence 
 authorization is revoked a few seconds later in the background (best effort: a revocation not yet
 sent when the relay stops is dropped).
 
-**204**, no body. Errors: `401 unauthorized`.
+**204**, no body. Errors: `401 unauthorized`. Never refused with `426 client_outdated`, whatever
+the console's version (see [Client version](#client-version)).
 
 ### `PUT /v1/presence`
 
