@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "badge_png.hpp"
 #include "crypto.hpp"
 
 namespace relay {
@@ -205,6 +206,14 @@ std::optional<PresenceUpdate> parse_presence(const std::string& body, std::strin
             return std::nullopt;
         }
         u.icon = it->get<std::string>();
+    }
+
+    if (auto it = j.find("badge"); it != j.end() && !it->is_null()) {
+        if (!it->is_boolean()) {
+            why = "badge must be a boolean";
+            return std::nullopt;
+        }
+        u.badge = it->get<bool>();
     }
     return u;
 }
@@ -472,6 +481,10 @@ void register_routes(httplib::Server& svr, Deps& d) {
     svr.Put("/v1/icons/:tid", bind(handle_put_icon));
     svr.Delete("/v1/icons/:tid", bind(handle_delete_icon));
     svr.Get(R"(/icons/([^/]+)\.jpg)", bind(handle_get_icon));
+    svr.Get("/badge.png", [](const Request&, Response& res) {
+        res.set_header("Cache-Control", "public, max-age=86400");
+        res.set_content(reinterpret_cast<const char*>(kBadgePng), kBadgePngSize, "image/png");
+    });
     svr.Get("/healthz", [](const Request&, Response& res) { res.set_content("ok", "text/plain"); });
 }
 

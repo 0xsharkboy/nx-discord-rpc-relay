@@ -6,11 +6,14 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 
 #include "client_version.hpp"
 
 namespace relay {
+
+inline constexpr std::string_view kDefaultBadgeUrl = "https://github.com/0xsharkboy/nx-discord-rpc";
 
 struct Config {
     std::string client_id, client_secret, public_base_url, listen_host, data_dir;
@@ -18,6 +21,8 @@ struct Config {
     std::optional<std::string> admin_key;
     // Consoles older than this get 426 on /v1/; unset refuses nobody.
     std::optional<Version> min_client_version;
+    // Opened by a click on the badge.
+    std::string badge_url = std::string(kDefaultBadgeUrl);
     int listen_port = 8080;
     bool trust_proxy = false;
 };

@@ -90,6 +90,7 @@ and fill it in, in the directory holding `compose.yml`. Keep `relay.env` readabl
 | `TRUST_PROXY` | no | `true` to key the rate limits on the first `X-Forwarded-For` hop, default `false` (the example sets `true`) |
 | `LISTEN_ADDR` | no | `host:port` to listen on inside the container, default `0.0.0.0:8080` |
 | `DATA_DIR` | no | Data directory inside the container, default `/data` |
+| `BADGE_URL` | no | Link opened by a click on the NX Discord RPC badge (a small image consoles can ask for, see `badge` in [protocol.md](protocol.md)). An https URL of at most 256 characters. Default: `https://github.com/0xsharkboy/nx-discord-rpc` |
 | `MIN_CLIENT_VERSION` | no | Oldest console version served, `X.Y.Z`. Older consoles get `426 client_outdated` on every `/v1/` route except `DELETE /v1/me` (unlink) and stop showing their presence; from v0.6.0 they also show that an update is required, older ones are not told why. Unset or empty: no minimum (the default). See [Client versions](#9-client-versions) |
 
 `PUBLISH_THRESHOLD` from earlier versions is no longer used: if it is still set, the relay ignores it

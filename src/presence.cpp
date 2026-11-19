@@ -26,7 +26,8 @@ constexpr int64_t kFailedStepRetryMs = 1000;
 bool same_activity(const ActivitySpec& a, const std::optional<ActivitySpec>& b) {
     if (!b) return false;
     if (a.name != b->name || a.details != b->details || a.large_image != b->large_image ||
-        a.large_text != b->large_text)
+        a.large_text != b->large_text || a.small_image != b->small_image || a.small_text != b->small_text ||
+        a.small_url != b->small_url)
         return false;
     if (a.start_unix_s.has_value() != b->start_unix_s.has_value()) return false;
     return !a.start_unix_s || std::llabs(*a.start_unix_s - *b->start_unix_s) < kStartJitterS;
@@ -184,6 +185,11 @@ void Presence::apply(const Command& c, int64_t now) {
         spec.details = u.details;
         spec.large_image = image_for(st);
         spec.large_text = u.name;
+        if (u.badge && !badge_.image.empty()) {
+            spec.small_image = badge_.image;
+            spec.small_text = badge_.text;
+            spec.small_url = badge_.url;
+        }
         if (u.elapsed_s) spec.start_unix_s = c.at_ms / 1000 - *u.elapsed_s;
         st.desired = std::move(spec);
         st.last_seen_ms = c.at_ms;

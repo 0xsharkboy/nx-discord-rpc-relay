@@ -23,6 +23,8 @@ struct PresenceUpdate {
     std::optional<std::string> title_id;
     // An icon hash (64 lowercase hex) the caller has validated.
     std::optional<std::string> icon;
+    // Show the badge (see Presence::set_badge).
+    bool badge = false;
 };
 
 // The large image of a presence: an image URL or "switch_logo".
@@ -38,6 +40,11 @@ public:
              std::function<int64_t()> now_ms);
     ~Presence();
     Presence(const Presence&) = delete;
+    // The small image a presence shows when its update asks for the badge. Set once, before the threads start.
+    struct Badge {
+        std::string image, text, url;
+    };
+    void set_badge(Badge badge) { badge_ = std::move(badge); }
     Presence& operator=(const Presence&) = delete;
 
     void put(const std::string& discord_id, const PresenceUpdate&);
@@ -112,6 +119,7 @@ private:
     Db& db_;
     std::array<uint8_t, 32> key_;
     ImageFor image_for_;
+    Badge badge_;
     std::function<int64_t()> now_ms_;
 
     std::mutex queue_mu_;

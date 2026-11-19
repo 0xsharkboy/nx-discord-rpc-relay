@@ -822,3 +822,56 @@ TEST_CASE("presence: a failing step does not stop the others and is retried 1 s 
     REQUIRE(sets.size() == 1);
     CHECK(f.presence->current("42")->name == "Zelda");
 }
+
+TEST_CASE("presence: the badge is the small image only when the update asks for it") {
+    Fixture f;
+    f.presence->set_badge({"https://x.test/badge.png", "NX Discord RPC", "https://github.com/0xsharkboy/nx-discord-rpc"});
+    PresenceUpdate with{"Zelda", "Chapter 1", 30, std::string(kTid), std::nullopt};
+    with.badge = true;
+    f.presence->put("42", with);
+    f.put("43", "Zelda", 30);
+    f.presence->tick();
+    auto sets = f.backend.calls(Kind::Set);
+    REQUIRE(sets.size() == 2);
+    for (const auto& s : sets) {
+        REQUIRE(s.spec);
+        if (s.discord_id == "42") {
+            CHECK(s.spec->small_image == "https://x.test/badge.png");
+            CHECK(s.spec->small_text == "NX Discord RPC");
+            CHECK(s.spec->small_url == "https://github.com/0xsharkboy/nx-discord-rpc");
+        } else {
+            CHECK(s.spec->small_image.empty());
+            CHECK(s.spec->small_text.empty());
+            CHECK(s.spec->small_url.empty());
+        }
+    }
+}
+
+TEST_CASE("presence: turning the badge off is re-sent at once") {
+    Fixture f;
+    f.presence->set_badge({"https://x.test/badge.png", "NX Discord RPC", "https://example.test"});
+    PresenceUpdate u{"Zelda", "Chapter 1", 30, std::string(kTid), std::nullopt};
+    u.badge = true;
+    f.presence->put("42", u);
+    f.presence->tick();
+    f.backend.reset();
+    f.now += 6000;
+    u.badge = false;
+    u.elapsed_s = 36;
+    f.presence->put("42", u);
+    f.presence->tick();
+    auto sets = f.backend.calls(Kind::Set);
+    REQUIRE(sets.size() == 1);
+    CHECK(sets[0].spec->small_image.empty());
+}
+
+TEST_CASE("presence: no badge configured means no small image") {
+    Fixture f;
+    PresenceUpdate u{"Zelda", "Chapter 1", 30, std::string(kTid), std::nullopt};
+    u.badge = true;
+    f.presence->put("42", u);
+    f.presence->tick();
+    auto sets = f.backend.calls(Kind::Set);
+    REQUIRE(sets.size() == 1);
+    CHECK(sets[0].spec->small_image.empty());
+}

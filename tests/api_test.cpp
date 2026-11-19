@@ -22,6 +22,7 @@
 #include <stb_image_write.h>
 
 #include "api.hpp"
+#include "badge_png.hpp"
 #include "client_version.hpp"
 #include "crypto.hpp"
 #include "fake_backend.hpp"
@@ -1206,4 +1207,49 @@ TEST_CASE("api: keyed requests are counted per version, unkeyed and refused ones
     REQUIRE(f.cli->Get("/v1/me", ua_bearer("nx-discord-rpc/0.6.0", "wrong-key")));
     REQUIRE(f.cli->Post("/v1/link", ua("nx-discord-rpc/0.6.0"), "", "text/plain"));
     CHECK(f.version_counts.drain_line() == "relay: client versions in the last 24 h: 0.7.0=1 0.6.0=2 other=1");
+}
+
+TEST_CASE("api: badge true shows the badge, absent or false does not, anything else is refused") {
+    Fixture f;
+    f.presence->set_badge({"https://relay.test/badge.png", "NX Discord RPC", "https://github.com/0xsharkboy/nx-discord-rpc"});
+    auto key = f.link();
+    auto r = f.put_presence(key, R"({"name":"Zelda","badge":true})");
+    REQUIRE(r);
+    CHECK(r->status == 204);
+    f.presence->tick();
+    auto sets = f.backend.calls(Kind::Set, "42");
+    REQUIRE(sets.size() == 1);
+    CHECK(sets[0].spec->small_image == "https://relay.test/badge.png");
+    CHECK(sets[0].spec->small_text == "NX Discord RPC");
+    CHECK(sets[0].spec->small_url == "https://github.com/0xsharkboy/nx-discord-rpc");
+
+    for (const char* body : {R"({"name":"Mario"})", R"({"name":"Mario","badge":false})", R"({"name":"Mario","badge":null})"}) {
+        CAPTURE(body);
+        f.backend.reset();
+        f.now += 6000;
+        auto off = f.put_presence(key, body);
+        REQUIRE(off);
+        CHECK(off->status == 204);
+        f.presence->tick();
+        auto now_sets = f.backend.calls(Kind::Set, "42");
+        if (!now_sets.empty()) CHECK(now_sets.back().spec->small_image.empty());
+        REQUIRE(f.presence->current("42"));
+        CHECK(f.presence->current("42")->small_image.empty());
+    }
+    for (const char* bad : {R"({"name":"Zelda","badge":1})", R"({"name":"Zelda","badge":"true"})"}) {
+        CAPTURE(bad);
+        check_error(f.put_presence(key, bad), 400, "invalid_body");
+    }
+}
+
+TEST_CASE("api: GET /badge.png serves the compiled-in PNG") {
+    Fixture f;
+    auto r = f.cli->Get("/badge.png");
+    REQUIRE(r);
+    CHECK(r->status == 200);
+    CHECK(r->get_header_value("Content-Type") == "image/png");
+    CHECK(r->get_header_value("Cache-Control") == "public, max-age=86400");
+    REQUIRE(r->body.size() > 8);
+    CHECK(r->body.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0);
+    CHECK(r->body.size() == relay::kBadgePngSize);
 }

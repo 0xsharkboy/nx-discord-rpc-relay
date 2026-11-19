@@ -3,6 +3,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include "config.hpp"
 #include "crypto.hpp"
@@ -192,5 +193,28 @@ TEST_CASE("load_config: invalid_min_version_is_config_error") {
         auto e = error_of(env);
         CHECK_MESSAGE(has(e, "MIN_CLIENT_VERSION"), v);
         CHECK_FALSE_MESSAGE(has(e, v), v);
+    }
+}
+
+TEST_CASE("load_config: BADGE_URL defaults to the project page and accepts an https override") {
+    auto env = full();
+    auto r = load(env);
+    REQUIRE(std::holds_alternative<Config>(r));
+    CHECK(std::get<Config>(r).badge_url == "https://github.com/0xsharkboy/nx-discord-rpc");
+    env["BADGE_URL"] = "https://example.org/my-relay";
+    r = load(env);
+    REQUIRE(std::holds_alternative<Config>(r));
+    CHECK(std::get<Config>(r).badge_url == "https://example.org/my-relay");
+}
+
+TEST_CASE("load_config: BADGE_URL must be an https URL of at most 256 characters") {
+    for (const std::string& bad : std::vector<std::string>{"http://example.org", "https://", "example.org", "https://a b",
+                                  "https://" + std::string(250, 'a')}) {
+        auto env = full();
+        env["BADGE_URL"] = bad;
+        auto r = load(env);
+        REQUIRE(std::holds_alternative<std::string>(r));
+        CHECK(std::get<std::string>(r).find("BADGE_URL") != std::string::npos);
+        CHECK(std::get<std::string>(r).find(bad) == std::string::npos);
     }
 }

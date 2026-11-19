@@ -46,7 +46,8 @@ Stored in the relay's database:
 Held in memory only, never written to the database:
 
 - **Your current presence**, as sent by the console: the title name, the details text, the elapsed
-  time, the title id and the hash of the icon it shows. It is used only to send it to Discord.
+  time, the title id, the hash of the icon it shows, and whether to show the NX Discord RPC badge.
+  It is used only to send it to Discord.
   This is also the only place that links you to an icon, and it lasts only as long as your session.
 - **IP addresses**, used only as keys for the rate limits on the linking routes.
 - **Icon upload counters**, keyed by your API key's hash, for the rate limits on icon uploads,

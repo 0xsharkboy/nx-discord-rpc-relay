@@ -47,6 +47,11 @@ discordpp::Activity to_activity(const ActivitySpec& s) {
     discordpp::ActivityAssets assets;
     assets.SetLargeImage(s.large_image);
     assets.SetLargeText(s.large_text);
+    if (!s.small_image.empty()) {
+        assets.SetSmallImage(s.small_image);
+        assets.SetSmallText(s.small_text);
+        if (!s.small_url.empty()) assets.SetSmallUrl(s.small_url);
+    }
     a.SetAssets(assets);
     return a;
 }

@@ -89,6 +89,15 @@ std::variant<Config, std::string> load_config(
         if (!c.min_client_version) invalid.emplace_back("MIN_CLIENT_VERSION must be X.Y.Z, or empty for no minimum");
     }
 
+    if (auto v = get("BADGE_URL")) {
+        // Discord limits the badge URL to 256 characters.
+        if (v->rfind(https, 0) != 0 || v->size() == https.size() || v->size() > 256 ||
+            v->find_first_of(" \t\r\n") != std::string::npos)
+            invalid.emplace_back("BADGE_URL must be an https URL of at most 256 characters");
+        else
+            c.badge_url = *v;
+    }
+
     c.data_dir = get("DATA_DIR").value_or("/data");
     c.admin_key = get("ADMIN_KEY");
 

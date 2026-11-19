@@ -196,6 +196,7 @@ int main() {
             return presence_image(icons, cfg.public_base_url, tid, icon);
         },
         unix_ms);
+    presence.set_badge({cfg.public_base_url + "/badge.png", "NX Discord RPC", cfg.badge_url});
     Links links(oauth, *db, cfg.token_key, unix_ms);
     links.on_relinked = [&presence](const std::string& id) { presence.drop(id); };
     Refresher refresher(oauth, *db, cfg.token_key, presence, unix_s);

@@ -10,6 +10,8 @@ namespace relay {
 
 struct ActivitySpec {
     std::string name, details, large_image, large_text;
+    // The badge: empty when the presence does not show it.
+    std::string small_image, small_text, small_url;
     std::optional<int64_t> start_unix_s;
     bool operator==(const ActivitySpec&) const = default;
 };

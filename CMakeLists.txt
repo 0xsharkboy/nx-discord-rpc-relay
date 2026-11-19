@@ -59,7 +59,15 @@ set_target_properties(discord_sdk PROPERTIES
     IMPORTED_LOCATION ${SDK_DIR}/lib/release/libdiscord_partner_sdk.so
     INTERFACE_INCLUDE_DIRECTORIES ${SDK_DIR}/include)
 
+# The badge shown next to presences (GET /badge.png) is compiled in, so the image needs no data file.
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/assets/badge.png BADGE_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," BADGE_BYTES "${BADGE_HEX}")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/badge_png.cpp
+    "// Generated from src/assets/badge.png.\n#include \"badge_png.hpp\"\nnamespace relay {\nconst unsigned char kBadgePng[] = {${BADGE_BYTES}};\nconst std::size_t kBadgePngSize = sizeof(kBadgePng);\n}  // namespace relay\n")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/assets/badge.png)
+
 add_library(relay_core STATIC
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/badge_png.cpp
     src/version.cpp
     src/client_version.cpp
     src/config.cpp

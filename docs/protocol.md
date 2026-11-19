@@ -257,6 +257,7 @@ Auth: API key. Body (at most 4096 bytes):
 | `elapsed_s` | integer | Optional, 0–31536000. Floats, booleans and strings are refused. |
 | `title_id` | string | Optional, a valid title id. Matches an icon upload to the current title. |
 | `icon` | string | Optional, 64 lowercase hex characters: the SHA-256 of the raw JPEG bytes of the title's icon. Anything else is refused with `400 invalid_body`. `null` counts as absent. |
+| `badge` | boolean | Optional. `true` adds the NX Discord RPC badge to the presence: a small image over the game icon (`/badge.png`), the tooltip "NX Discord RPC", and a link opened by a click (`BADGE_URL` on the relay, by default the project page). Absent, `null` or `false`: no badge. Anything else is refused with `400 invalid_body`. |
 
 `name` and `details` are shown exactly as sent. `null` counts as absent for the optional fields.
 The image is chosen in this order: the icon named by `icon` when the relay stores it, then an icon
@@ -367,6 +368,11 @@ A console that sends `icon` follows these rules:
 
 A console from before v0.4.0 sends no `icon`, gets `204`, and uploads its icon once after its first
 presence for a title. The relay attaches that upload to the account's current presence.
+
+### `GET /badge.png`
+
+No auth, never refused. The badge image (PNG) used as the small image of presences that ask for the
+badge. **200** with `Content-Type: image/png` and `Cache-Control: public, max-age=86400`.
 
 ### `GET /healthz`
 
