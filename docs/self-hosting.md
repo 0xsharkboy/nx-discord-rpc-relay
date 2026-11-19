@@ -179,8 +179,9 @@ except when it unlinks. On start, the relay logs the minimum it enforces.
 The relay and the console homebrew have separate version numbers: a relay release does not need a
 console release, and the reverse. Which consoles a relay serves depends on the API and on
 `MIN_CLIENT_VERSION`, not on matching numbers. Each relay release is tagged `vX.Y.Z` in this
-repository, and the relay logs its version on start (`relay 0.1.1 listening on ...`).
+repository, and the relay logs its version on start (`relay 0.1.2 listening on ...`).
 
 | Relay | Consoles served | Notes |
 |-------|-----------------|-------|
+| 0.1.2 | v0.1.0 and newer | Presence text that is not valid UTF-8 (some game and homebrew names) is repaired instead of refused. Refusals are logged with their reason. |
 | 0.1.1 | v0.1.0 and newer | Every feature up to console v0.7.0, including the badge. Same data layout as 0.1.0. |

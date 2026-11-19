@@ -1255,3 +1255,47 @@ TEST_CASE("api: GET /badge.png serves the compiled-in PNG") {
     CHECK(r->body.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0);
     CHECK(r->body.size() == relay::kBadgePngSize);
 }
+
+TEST_CASE("api: presence text that is not valid UTF-8 is repaired, not refused") {
+    Fixture f;
+    auto key = f.link();
+    // Latin-1, a cut sequence, a UTF-16 surrogate and an overlong slash, as a NACP may hold them.
+    const std::string name = std::string("Pok") + "\xE9" + "mon " + "\xC3" + "( " + "\xED\xA0\x80" + " " + "\xC0\xAF";
+    const std::string details = std::string("on ") + "\xFF" + " Switch \xC3\xA9";
+    auto r = f.put_presence(key, R"({"name":")" + name + R"(","details":")" + details + R"("})");
+    REQUIRE(r);
+    CHECK(r->status == 204);
+    f.presence->tick();
+    auto sets = f.backend.calls(Kind::Set, "42");
+    REQUIRE(sets.size() == 1);
+    CHECK(sets[0].spec->name == "Pok?mon ?( ??? ??");
+    CHECK(sets[0].spec->details == "on ? Switch \xC3\xA9");
+
+    // Repairing keeps the byte length, so a name at the limit stays within it.
+    const std::string at_limit = std::string(127, 'a') + "\xE9";
+    r = f.put_presence(key, R"({"name":")" + at_limit + R"("})");
+    REQUIRE(r);
+    CHECK(r->status == 204);
+    // Bytes outside a string are still not JSON.
+    check_error(f.put_presence(key, std::string("{\"name\":\"Z\"\xE9}")), 400, "invalid_body");
+}
+
+TEST_CASE("api: a refused request logs why, with no request data") {
+    Fixture f;
+    auto key = f.link();
+    const std::string secret_name(129, 's');
+    check_error(f.put_presence(key, json{{"name", secret_name}}.dump()), 400, "invalid_body");
+    auto missing = f.cli->Get("/nope");
+    REQUIRE(missing);
+    CHECK(missing->status == 404);
+    bool found = false;
+    for (const auto& line : f.logs()) {
+        CHECK(line.find(secret_name) == std::string::npos);
+        if (line.find("PUT /v1/presence 400 ") != std::string::npos) {
+            found = true;
+            CHECK(line.find("invalid_body: name must be a string of 1 to 128 bytes") != std::string::npos);
+        }
+        if (line.find("GET /nope 404 ") != std::string::npos) CHECK(line.find("not_found") == std::string::npos);
+    }
+    CHECK(found);
+}

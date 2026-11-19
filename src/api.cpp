@@ -157,8 +157,38 @@ bool rate_limited(RateLimiter& limiter, const std::string& key, Response& res) {
     return true;
 }
 
+// Replaces every byte that does not start or continue a well formed UTF-8 sequence with '?', which
+// keeps the byte length. Consoles read game names from NACPs, which may hold Latin-1 or cut text.
+std::string repair_utf8(std::string s) {
+    const auto byte = [&s](size_t i) { return static_cast<unsigned char>(s[i]); };
+    const auto in = [](unsigned char c, unsigned char lo, unsigned char hi) { return c >= lo && c <= hi; };
+    size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = byte(i);
+        size_t len = 0;
+        unsigned char lo = 0x80, hi = 0xBF;  // the allowed range of the second byte
+        if (c < 0x80) len = 1;
+        else if (in(c, 0xC2, 0xDF)) len = 2;
+        else if (c == 0xE0) len = 3, lo = 0xA0;
+        else if (in(c, 0xE1, 0xEC) || in(c, 0xEE, 0xEF)) len = 3;
+        else if (c == 0xED) len = 3, hi = 0x9F;
+        else if (c == 0xF0) len = 4, lo = 0x90;
+        else if (in(c, 0xF1, 0xF3)) len = 4;
+        else if (c == 0xF4) len = 4, hi = 0x8F;
+        bool ok = len > 0 && i + len <= s.size();
+        for (size_t k = 1; ok && k < len; ++k) ok = k == 1 ? in(byte(i + 1), lo, hi) : in(byte(i + k), 0x80, 0xBF);
+        if (ok) {
+            i += len;
+        } else {
+            s[i] = '?';
+            ++i;
+        }
+    }
+    return s;
+}
+
 std::optional<PresenceUpdate> parse_presence(const std::string& body, std::string& why) {
-    auto j = json::parse(body, nullptr, false);
+    auto j = json::parse(repair_utf8(body), nullptr, false);
     if (j.is_discarded() || !j.is_object()) {
         why = "Body must be a JSON object";
         return std::nullopt;
@@ -459,8 +489,17 @@ void register_routes(httplib::Server& svr, Deps& d) {
         int64_t duration = 0;
         if (t_request_start) duration = d.monotonic_ms() - *t_request_start;
         t_request_start.reset();
-        d.log(printable(req.method) + ' ' + log_path(req.path) + ' ' + std::to_string(res.status) + ' ' +
-              std::to_string(duration) + "ms");
+        std::string line = printable(req.method) + ' ' + log_path(req.path) + ' ' + std::to_string(res.status) +
+                           ' ' + std::to_string(duration) + "ms";
+        // Why a request was refused. Every error message is a fixed string of the relay, never request
+        // data. 404s are left out: scanners make most of them.
+        if (res.status >= 400 && res.status != 404) {
+            auto body = json::parse(res.body, nullptr, false);
+            if (body.is_object() && body.value("error", json()).is_string() &&
+                body.value("message", json()).is_string())
+                line += ' ' + body["error"].get<std::string>() + ": " + body["message"].get<std::string>();
+        }
+        d.log(line);
     });
 
     auto bind = [&d](void (*h)(Deps&, const Request&, Response&)) {
