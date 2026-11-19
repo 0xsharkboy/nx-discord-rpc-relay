@@ -6,7 +6,6 @@
 #include <cctype>
 #include <chrono>
 #include <exception>
-#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <optional>
@@ -377,17 +376,12 @@ void handle_delete_icon(Deps& d, const Request& req, Response& res) {
 
 void handle_get_icon(Deps& d, const Request& req, Response& res) {
     const auto name = req.matches[1].str();
-    std::optional<std::string> path =
-        Icons::valid_sha256(name) ? d.icons.hash_path(name) : d.icons.published_path(name);
-    std::string bytes;
-    if (path) {
-        std::ifstream f(*path, std::ios::binary);
-        if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-    }
-    if (bytes.empty()) return send_error(res, 404, "not_found", "No such icon");
+    std::optional<std::string> bytes =
+        Icons::valid_sha256(name) ? d.icons.hash_bytes(name) : d.icons.published_bytes(name);
+    if (!bytes || bytes->empty()) return send_error(res, 404, "not_found", "No such icon");
     res.status = 200;
     res.set_header("Cache-Control", "public, max-age=86400");
-    res.set_content(std::move(bytes), "image/jpeg");
+    res.set_content(std::move(*bytes), "image/jpeg");
 }
 
 }  // namespace

@@ -12,6 +12,7 @@
 #include <unordered_set>
 
 #include "db.hpp"
+#include "icon_store.hpp"
 
 namespace relay {
 
@@ -36,35 +37,38 @@ struct StoreOutcome {
 // Asked before a new file is written: nullopt admits it, else the seconds to wait.
 using AdmitNewIcon = std::function<std::optional<int64_t>()>;
 
-// Icon files named after the SHA-256 of the raw uploaded bytes, under <icons_dir>/h/. The stored
-// file is the re-encoded image and is never re-hashed.
+// Icon objects keyed by the SHA-256 of the raw uploaded bytes, under "h/" in the store. The stored
+// object is the re-encoded image and is never re-hashed. The database says which hashes exist; the
+// store only holds the bytes.
 class Icons {
 public:
     // `now` returns unix seconds.
-    Icons(Db& db, std::string icons_dir, int64_t max_files, std::function<int64_t()> now);
+    Icons(Db& db, IconStore& store, int64_t max_files, std::function<int64_t()> now);
 
-    // Throws std::runtime_error if the icon file cannot be written (server I/O error); nothing is
-    // recorded then. `admit_new`, when set, is asked only for bytes not stored yet and with room
-    // left under the cap; a refusal gives Limited and stores nothing.
+    // Throws std::runtime_error if the icon cannot be written to the store (server I/O error);
+    // nothing is recorded then. `admit_new`, when set, is asked only for bytes not stored yet and
+    // with room left under the cap; a refusal gives Limited and stores nothing.
     StoreOutcome store(std::string_view jpeg, const AdmitNewIcon& admit_new = {});
     // The file row exists and the hash is not blocked.
     bool usable(std::string_view sha256);
     // Records a use of the hash, writing at most once a day per hash.
     void touch(std::string_view sha256);
-    // The file path when the hash is usable and its file exists.
-    std::optional<std::string> hash_path(std::string_view sha256);
-    // Blocks the hash and deletes its file and row. False when the hash was unknown and already
+    // The stored bytes when the hash is usable and its object can be read.
+    std::optional<std::string> hash_bytes(std::string_view sha256);
+    // Blocks the hash and deletes its object and row. False when the hash was unknown and already
     // blocked, or is not a valid hash.
     bool remove_hash(std::string_view sha256);
-    // Deletes the files and rows unused for kIconLifetimeS and not in `in_use`. Returns how many.
+    // Deletes the objects and rows unused for kIconLifetimeS and not in `in_use`. Returns how many.
     size_t cleanup(const std::unordered_set<std::string>& in_use);
 
-    // Legacy title icons published before v0.4.0, served read-only. Nothing when its hash is blocked.
-    std::optional<std::string> published_path(std::string_view title_id);
-    // usable() and published_path() for the SDK thread: on the database's read connection and
-    // without the Icons lock, so they never wait behind an HTTP-side write.
+    // Legacy title icons published before v0.4.0, served read-only. Nothing when its hash is blocked
+    // or its object cannot be read.
+    std::optional<std::string> published_bytes(std::string_view title_id);
+    // usable(), and published_bytes() without reading the bytes, for the SDK thread: on the
+    // database's read connection and without the Icons lock, so they never wait behind an
+    // HTTP-side write.
     bool reader_usable(std::string_view sha256);
-    std::optional<std::string> reader_published_path(std::string_view title_id);
+    bool reader_published(std::string_view title_id);
     // False when nothing is published for the title.
     bool admin_delete(std::string_view title_id);
 
@@ -72,11 +76,11 @@ public:
     static bool valid_sha256(std::string_view);
 
 private:
-    std::string path_for(const std::string& tid) const;
-    std::string hash_file(std::string_view sha256) const;
+    static std::string title_key(const std::string& tid);
+    static std::string hash_key(std::string_view sha256);
 
     Db& db_;
-    std::string dir_;
+    IconStore& store_;
     int64_t max_files_;
     std::function<int64_t()> now_;
     std::mutex mu_;

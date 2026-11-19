@@ -189,7 +189,8 @@ int main() {
     // here, Presence first.
     SdkBackend backend(application_id);
     DiscordOAuth oauth(cfg);
-    Icons icons(*db, icons_dir.string(), kDefaultMaxIconFiles, unix_s);
+    DiskIconStore icon_store(icons_dir.string());
+    Icons icons(*db, icon_store, kDefaultMaxIconFiles, unix_s);
     Presence presence(
         backend, *db, cfg.token_key,
         [&icons, &cfg](const std::optional<std::string>& tid, const std::optional<std::string>& icon) {

@@ -90,6 +90,7 @@ struct Fixture {
     std::unique_ptr<Db> db;
     FakeOAuth oauth;
     FakeBackend backend;
+    std::unique_ptr<DiskIconStore> icon_store;
     std::unique_ptr<Icons> icons;
     std::unique_ptr<Links> links;
     std::unique_ptr<Presence> presence;
@@ -119,7 +120,8 @@ struct Fixture {
 
         auto now_ms = [this] { return now.load(); };
         db = Db::open((root / "relay.db").string());
-        icons = std::make_unique<Icons>(*db, (root / "icons").string(), max_icon_files,
+        icon_store = std::make_unique<DiskIconStore>((root / "icons").string());
+        icons = std::make_unique<Icons>(*db, *icon_store, max_icon_files,
                                         [this] { return now.load() / 1000; });
         links = std::make_unique<Links>(oauth, *db, cfg.token_key, now_ms);
         presence = std::make_unique<Presence>(

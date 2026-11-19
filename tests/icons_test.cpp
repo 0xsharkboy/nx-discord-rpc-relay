@@ -5,9 +5,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 #include <sqlite3.h>
@@ -85,6 +88,7 @@ struct Env {
     fs::path root;
     std::unique_ptr<Db> db;
     int64_t clock = 1000;
+    std::unique_ptr<DiskIconStore> store;
     std::unique_ptr<Icons> icons;
 
     explicit Env(int64_t max_files = kDefaultMaxIconFiles) {
@@ -94,10 +98,12 @@ struct Env {
         fs::remove_all(root);
         fs::create_directories(root);
         db = Db::open((root / "t.db").string());
-        icons = std::make_unique<Icons>(*db, (root / "icons").string(), max_files, [this] { return clock; });
+        store = std::make_unique<DiskIconStore>((root / "icons").string());
+        icons = std::make_unique<Icons>(*db, *store, max_files, [this] { return clock; });
     }
     ~Env() {
         icons.reset();
+        store.reset();
         db.reset();
         fs::remove_all(root);
     }
@@ -166,9 +172,9 @@ TEST_CASE("icons: store_names_file_after_raw_hash") {
     CHECK(h == 256);
 
     CHECK(e.icons->usable(sha));
-    auto path = e.icons->hash_path(sha);
-    REQUIRE(path);
-    CHECK(fs::path(*path) == e.hash_file(sha));
+    auto bytes = e.icons->hash_bytes(sha);
+    REQUIRE(bytes);
+    CHECK(*bytes == served);
 }
 
 TEST_CASE("icons: store_same_bytes_twice_keeps_one_file") {
@@ -244,19 +250,19 @@ TEST_CASE("icons: rejected uploads store nothing") {
     CHECK(fs::is_empty(e.root / "icons" / "h"));
 }
 
-TEST_CASE("icons: usable and hash_path") {
+TEST_CASE("icons: usable and hash_bytes") {
     Env e;
     const std::string unknown(64, 'a');
     CHECK_FALSE(e.icons->usable(unknown));
-    CHECK_FALSE(e.icons->hash_path(unknown));
+    CHECK_FALSE(e.icons->hash_bytes(unknown));
     CHECK_FALSE(e.icons->usable("../t"));
-    CHECK_FALSE(e.icons->hash_path("../t"));
+    CHECK_FALSE(e.icons->hash_bytes("../t"));
 
     auto jpg = make_jpeg(256, 256, 1);
     const auto sha = e.icons->store(jpg).sha256;
-    REQUIRE(e.icons->hash_path(sha));
+    REQUIRE(e.icons->hash_bytes(sha));
     fs::remove(e.hash_file(sha));
-    CHECK_FALSE(e.icons->hash_path(sha));
+    CHECK_FALSE(e.icons->hash_bytes(sha));
 }
 
 TEST_CASE("icons: touch writes at most once a day per hash") {
@@ -326,7 +332,7 @@ TEST_CASE("icons: cleanup keeps the file when its row cannot be deleted") {
     CHECK_THROWS(e.icons->cleanup({}));
     CHECK(e.icons->usable(a));
     CHECK(fs::exists(e.hash_file(a)));
-    CHECK(e.icons->hash_path(a));
+    CHECK(e.icons->hash_bytes(a));
 }
 
 TEST_CASE("icons: remove_hash_blocks_and_deletes") {
@@ -338,7 +344,7 @@ TEST_CASE("icons: remove_hash_blocks_and_deletes") {
     CHECK_FALSE(e.db->has_icon_file(sha));
     CHECK_FALSE(fs::exists(e.hash_file(sha)));
     CHECK_FALSE(e.icons->usable(sha));
-    CHECK_FALSE(e.icons->hash_path(sha));
+    CHECK_FALSE(e.icons->hash_bytes(sha));
     CHECK(e.icons->store(jpg).result == StoreResult::Blocked);
     CHECK_FALSE(e.icons->remove_hash(sha));
 
@@ -357,7 +363,7 @@ TEST_CASE("icons: a blocked hash with a leftover row is not usable") {
     const auto sha = e.icons->store(make_jpeg(256, 256, 1)).sha256;
     e.db->block_hash(sha);
     CHECK_FALSE(e.icons->usable(sha));
-    CHECK_FALSE(e.icons->hash_path(sha));
+    CHECK_FALSE(e.icons->hash_bytes(sha));
 }
 
 TEST_CASE("icons: write failure throws and stores nothing") {
@@ -370,25 +376,27 @@ TEST_CASE("icons: write failure throws and stores nothing") {
     CHECK_FALSE(e.db->has_icon_file(sha256_hex(jpg)));
 }
 
-TEST_CASE("icons: legacy published_path requires row and file") {
+TEST_CASE("icons: legacy published_bytes requires row and file") {
     Env e;
-    CHECK_FALSE(e.icons->published_path(TID));
+    CHECK_FALSE(e.icons->published_bytes(TID));
     e.seed_legacy(TID, "H1");
-    auto path = e.icons->published_path("0100a0d02127e000");
-    REQUIRE(path);
-    CHECK(fs::path(*path).filename() == "0100A0D02127E000.jpg");
-    fs::remove(*path);
-    CHECK_FALSE(e.icons->published_path(TID));
-    CHECK_FALSE(e.icons->published_path("bad"));
+    const auto path = e.root / "icons" / "0100A0D02127E000.jpg";
+    auto bytes = e.icons->published_bytes("0100a0d02127e000");
+    REQUIRE(bytes);
+    CHECK(*bytes == read_file(path));
+    fs::remove(path);
+    CHECK_FALSE(e.icons->published_bytes(TID));
+    CHECK_FALSE(e.icons->published_bytes("bad"));
 }
 
 TEST_CASE("icons: legacy admin_delete blocks the hash") {
     Env e;
     CHECK_FALSE(e.icons->admin_delete(TID));
     e.seed_legacy(TID, "H1");
-    auto path = *e.icons->published_path(TID);
+    const auto path = e.root / "icons" / (std::string(TID) + ".jpg");
+    REQUIRE(e.icons->published_bytes(TID));
     CHECK(e.icons->admin_delete("0100a0d02127e000"));
-    CHECK_FALSE(e.icons->published_path(TID));
+    CHECK_FALSE(e.icons->published_bytes(TID));
     CHECK_FALSE(fs::exists(path));
     CHECK(e.db->is_blocked("H1"));
     CHECK_FALSE(e.icons->admin_delete(TID));
@@ -398,9 +406,9 @@ TEST_CASE("icons: a legacy title icon whose hash is blocked is not served") {
     Env e;
     const std::string sha(64, 'a');
     e.seed_legacy(TID, sha);
-    REQUIRE(e.icons->published_path(TID));
+    REQUIRE(e.icons->published_bytes(TID));
     CHECK(e.icons->remove_hash(sha));
-    CHECK_FALSE(e.icons->published_path(TID));
+    CHECK_FALSE(e.icons->published_bytes(TID));
     CHECK(presence_image(*e.icons, "https://x.test", std::string(TID), std::nullopt) == "switch_logo");
 }
 
@@ -446,36 +454,115 @@ TEST_CASE("icons: sdk_reads_do_not_wait_for_writer") {
     CHECK(legacy == std::string("https://x.test/icons/") + TID + ".jpg");
 }
 
-TEST_CASE("icons: the reader lookups answer like usable and published_path") {
+TEST_CASE("icons: the reader lookups answer like usable and published_bytes") {
     Env e;
     const std::string unknown(64, 'a');
     const auto sha = e.icons->store(make_jpeg(256, 256, 1)).sha256;
     const auto same = [&](const std::string& h) { return e.icons->reader_usable(h) == e.icons->usable(h); };
-    const auto same_path = [&](const std::string& t) {
-        return e.icons->reader_published_path(t) == e.icons->published_path(t);
+    const auto same_published = [&](const std::string& t) {
+        return e.icons->reader_published(t) == e.icons->published_bytes(t).has_value();
     };
     CHECK(same(unknown));
     CHECK(same("../t"));
     CHECK(e.icons->reader_usable(sha));
     CHECK(same(sha));
-    CHECK_FALSE(e.icons->reader_published_path(TID));
-    CHECK(same_path(TID));
+    CHECK_FALSE(e.icons->reader_published(TID));
+    CHECK(same_published(TID));
     e.seed_legacy(TID, unknown);
-    CHECK(e.icons->reader_published_path("0100a0d02127e000"));
-    CHECK(same_path("0100a0d02127e000"));
-    CHECK(same_path("bad"));
-    CHECK_FALSE(e.icons->reader_published_path("bad"));
+    CHECK(e.icons->reader_published("0100a0d02127e000"));
+    CHECK(same_published("0100a0d02127e000"));
+    CHECK(same_published("bad"));
+    CHECK_FALSE(e.icons->reader_published("bad"));
     // A legacy title icon whose file is gone is not served.
-    const auto path = *e.icons->published_path(TID);
+    const auto path = (e.root / "icons" / (std::string(TID) + ".jpg")).string();
     fs::rename(path, path + ".bak");
-    CHECK_FALSE(e.icons->reader_published_path(TID));
+    CHECK_FALSE(e.icons->reader_published(TID));
     fs::rename(path + ".bak", path);
-    REQUIRE(e.icons->reader_published_path(TID));
+    REQUIRE(e.icons->reader_published(TID));
     // Blocking hides both the hash and a legacy icon with the same bytes.
     e.icons->remove_hash(sha);
     CHECK_FALSE(e.icons->reader_usable(sha));
     CHECK(same(sha));
     e.icons->remove_hash(unknown);
-    CHECK_FALSE(e.icons->reader_published_path(TID));
-    CHECK(same_path(TID));
+    CHECK_FALSE(e.icons->reader_published(TID));
+    CHECK(same_published(TID));
+}
+
+TEST_CASE("icon store: disk objects are written, read, checked and removed by key") {
+    Env e;
+    DiskIconStore& s = *e.store;
+    const std::string key = "h/" + std::string(64, 'b') + ".jpg";
+    CHECK_FALSE(s.exists(key));
+    CHECK_FALSE(s.get(key));
+    REQUIRE(s.put(key, "one"));
+    CHECK(s.exists(key));
+    CHECK(read_file(e.root / "icons" / key) == "one");
+    REQUIRE(s.put(key, "two"));
+    CHECK(*s.get(key) == "two");
+    CHECK_FALSE(fs::exists(e.root / "icons" / (key + ".tmp")));
+    s.remove(key);
+    CHECK_FALSE(s.exists(key));
+    s.remove(key);
+    CHECK_FALSE(s.put("missing/dir.jpg", "x"));
+}
+
+namespace {
+
+// Objects in memory: Icons must work on any store, not only on files.
+struct MemoryStore final : IconStore {
+    std::mutex mu;
+    std::unordered_map<std::string, std::string> objects;
+    bool fail_puts = false;
+
+    bool put(std::string_view key, std::string_view bytes) override {
+        std::lock_guard lk(mu);
+        if (fail_puts) return false;
+        objects[std::string(key)] = std::string(bytes);
+        return true;
+    }
+    std::optional<std::string> get(std::string_view key) override {
+        std::lock_guard lk(mu);
+        auto it = objects.find(std::string(key));
+        if (it == objects.end()) return std::nullopt;
+        return it->second;
+    }
+    bool exists(std::string_view key) override {
+        std::lock_guard lk(mu);
+        return objects.contains(std::string(key));
+    }
+    void remove(std::string_view key) override {
+        std::lock_guard lk(mu);
+        objects.erase(std::string(key));
+    }
+};
+
+}  // namespace
+
+TEST_CASE("icons: work on a store that is not the disk") {
+    Env e;
+    MemoryStore mem;
+    Icons icons(*e.db, mem, kDefaultMaxIconFiles, [&e] { return e.clock; });
+    const auto jpg = make_jpeg(256, 256, 1);
+    const auto sha = sha256_hex(jpg);
+
+    mem.fail_puts = true;
+    CHECK_THROWS_AS(icons.store(jpg), std::runtime_error);
+    CHECK_FALSE(e.db->has_icon_file(sha));
+    mem.fail_puts = false;
+
+    REQUIRE(icons.store(jpg).result == StoreResult::Stored);
+    REQUIRE(mem.objects.contains("h/" + sha + ".jpg"));
+    CHECK(fs::is_empty(e.root / "icons" / "h"));
+    CHECK(icons.hash_bytes(sha) == mem.objects["h/" + sha + ".jpg"]);
+    CHECK(presence_image(icons, "https://x.test", std::nullopt, sha) == "https://x.test/icons/" + sha + ".jpg");
+
+    // A missing object is written again for known bytes.
+    mem.objects.clear();
+    CHECK_FALSE(icons.hash_bytes(sha));
+    REQUIRE(icons.store(jpg).result == StoreResult::Stored);
+    CHECK(icons.hash_bytes(sha));
+
+    e.clock += kIconLifetimeS + 1;
+    CHECK(icons.cleanup({}) == 1);
+    CHECK(mem.objects.empty());
 }

@@ -2,8 +2,6 @@
 #include "icons.hpp"
 
 #include <cctype>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -14,8 +12,6 @@
 #include "crypto.hpp"
 
 namespace relay {
-namespace fs = std::filesystem;
-
 namespace {
 
 constexpr size_t kMaxBytes = 131072;
@@ -51,28 +47,6 @@ std::optional<std::string> reencode(std::string_view jpeg) {
     return out;
 }
 
-bool write_atomic(const fs::path& dest, const std::string& bytes) {
-    fs::path tmp = dest;
-    tmp += ".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        f.flush();
-        if (!f) {
-            std::error_code ec;
-            fs::remove(tmp, ec);
-            return false;
-        }
-    }
-    std::error_code ec;
-    fs::rename(tmp, dest, ec);
-    if (ec) {
-        fs::remove(tmp, ec);
-        return false;
-    }
-    return true;
-}
-
 }  // namespace
 
 bool valid_title_id(std::string_view tid) {
@@ -96,10 +70,8 @@ std::string normalize_title_id(std::string_view tid) {
     return s;
 }
 
-Icons::Icons(Db& db, std::string icons_dir, int64_t max_files, std::function<int64_t()> now)
-    : db_(db), dir_(std::move(icons_dir)), max_files_(max_files), now_(std::move(now)) {
-    fs::create_directories(fs::path(dir_) / "h");
-}
+Icons::Icons(Db& db, IconStore& store, int64_t max_files, std::function<int64_t()> now)
+    : db_(db), store_(store), max_files_(max_files), now_(std::move(now)) {}
 
 bool Icons::valid_sha256(std::string_view s) {
     if (s.size() != 64) return false;
@@ -108,13 +80,9 @@ bool Icons::valid_sha256(std::string_view s) {
     return true;
 }
 
-std::string Icons::path_for(const std::string& tid) const {
-    return (fs::path(dir_) / (tid + ".jpg")).string();
-}
+std::string Icons::title_key(const std::string& tid) { return tid + ".jpg"; }
 
-std::string Icons::hash_file(std::string_view sha256) const {
-    return (fs::path(dir_) / "h" / (std::string(sha256) + ".jpg")).string();
-}
+std::string Icons::hash_key(std::string_view sha256) { return "h/" + std::string(sha256) + ".jpg"; }
 
 StoreOutcome Icons::store(std::string_view jpeg, const AdmitNewIcon& admit_new) {
     if (jpeg.empty()) return {StoreResult::Invalid, {}};
@@ -125,11 +93,10 @@ StoreOutcome Icons::store(std::string_view jpeg, const AdmitNewIcon& admit_new) 
     std::string hash = sha256_hex(jpeg);
     std::lock_guard lk(mu_);
     if (db_.is_blocked(hash)) return {StoreResult::Blocked, {}};
-    const auto path = hash_file(hash);
-    std::error_code ec;
+    const auto key = hash_key(hash);
     if (db_.has_icon_file(hash)) {
-        // Known bytes: nothing to write, unless the file went missing.
-        if (!fs::exists(path, ec) && !write_atomic(path, *encoded))
+        // Known bytes: nothing to write, unless the object went missing.
+        if (!store_.exists(key) && !store_.put(key, *encoded))
             throw std::runtime_error("failed to write icon file");
         return {StoreResult::Stored, std::move(hash)};
     }
@@ -137,7 +104,7 @@ StoreOutcome Icons::store(std::string_view jpeg, const AdmitNewIcon& admit_new) 
     if (admit_new) {
         if (auto wait_s = admit_new()) return {StoreResult::Limited, {}, *wait_s};
     }
-    if (!write_atomic(path, *encoded)) throw std::runtime_error("failed to write icon file");
+    if (!store_.put(key, *encoded)) throw std::runtime_error("failed to write icon file");
     db_.add_icon_file(hash, now_());
     return {StoreResult::Stored, std::move(hash)};
 }
@@ -160,14 +127,16 @@ void Icons::touch(std::string_view sha256) {
     db_.touch_icon_file(sha256, now);
 }
 
-std::optional<std::string> Icons::hash_path(std::string_view sha256) {
+std::optional<std::string> Icons::hash_bytes(std::string_view sha256) {
     if (!valid_sha256(sha256)) return std::nullopt;
-    std::lock_guard lk(mu_);
-    if (!db_.has_icon_file(sha256) || db_.is_blocked(sha256)) return std::nullopt;
-    auto p = hash_file(sha256);
-    std::error_code ec;
-    if (!fs::exists(p, ec)) return std::nullopt;
-    return p;
+    std::string key;
+    {
+        std::lock_guard lk(mu_);
+        if (!db_.has_icon_file(sha256) || db_.is_blocked(sha256)) return std::nullopt;
+        key = hash_key(sha256);
+    }
+    // Read outside the lock: a slow store never holds up uploads.
+    return store_.get(key);
 }
 
 bool Icons::remove_hash(std::string_view sha256) {
@@ -176,8 +145,7 @@ bool Icons::remove_hash(std::string_view sha256) {
     const bool known = db_.has_icon_file(sha256);
     const bool was_blocked = db_.is_blocked(sha256);
     db_.block_hash(sha256);
-    std::error_code ec;
-    fs::remove(hash_file(sha256), ec);
+    store_.remove(hash_key(sha256));
     db_.delete_icon_file(sha256);
     touched_.erase(std::string(sha256));
     return known || !was_blocked;
@@ -189,46 +157,38 @@ size_t Icons::cleanup(const std::unordered_set<std::string>& in_use) {
     size_t removed = 0;
     for (const auto& hash : db_.icon_files_unused_since(now - kIconLifetimeS)) {
         if (in_use.contains(hash)) continue;
-        // The row first: reader_usable() takes no Icons lock, and must never find a row whose file
-        // is already gone. A file left behind by a failed remove is only wasted space.
+        // The row first: reader_usable() takes no Icons lock, and must never find a row whose object
+        // is already gone. An object left behind by a failed remove is only wasted space.
         db_.delete_icon_file(hash);
-        // Only well formed names reach the disk.
-        if (valid_sha256(hash)) {
-            std::error_code ec;
-            fs::remove(hash_file(hash), ec);
-        }
+        // Only well formed names reach the store.
+        if (valid_sha256(hash)) store_.remove(hash_key(hash));
         ++removed;
     }
     std::erase_if(touched_, [now](const auto& kv) { return now - kv.second >= kTouchEveryS; });
     return removed;
 }
 
-std::optional<std::string> Icons::published_path(std::string_view title_id) {
+std::optional<std::string> Icons::published_bytes(std::string_view title_id) {
     if (!valid_title_id(title_id)) return std::nullopt;
     const std::string tid = normalize_title_id(title_id);
-    std::lock_guard lk(mu_);
-    // A hash removed by an admin hides the legacy icon of every title that has the same bytes.
-    auto rec = db_.published_icon(tid);
-    if (!rec || db_.is_blocked(rec->sha256)) return std::nullopt;
-    auto p = path_for(tid);
-    std::error_code ec;
-    if (!fs::exists(p, ec)) return std::nullopt;
-    return p;
+    {
+        std::lock_guard lk(mu_);
+        // A hash removed by an admin hides the legacy icon of every title that has the same bytes.
+        auto rec = db_.published_icon(tid);
+        if (!rec || db_.is_blocked(rec->sha256)) return std::nullopt;
+    }
+    return store_.get(title_key(tid));
 }
 
-// No Icons lock: these only read the database, in one statement each, and the file system.
+// No Icons lock: these only read the database, in one statement each, and the store.
 bool Icons::reader_usable(std::string_view sha256) {
     return valid_sha256(sha256) && db_.reader().icon_usable(sha256);
 }
 
-std::optional<std::string> Icons::reader_published_path(std::string_view title_id) {
-    if (!valid_title_id(title_id)) return std::nullopt;
+bool Icons::reader_published(std::string_view title_id) {
+    if (!valid_title_id(title_id)) return false;
     const std::string tid = normalize_title_id(title_id);
-    if (!db_.reader().unblocked_published_icon(tid)) return std::nullopt;
-    auto p = path_for(tid);
-    std::error_code ec;
-    if (!fs::exists(p, ec)) return std::nullopt;
-    return p;
+    return db_.reader().unblocked_published_icon(tid) && store_.exists(title_key(tid));
 }
 
 bool Icons::admin_delete(std::string_view title_id) {
@@ -239,15 +199,14 @@ bool Icons::admin_delete(std::string_view title_id) {
     if (!rec) return false;
     db_.unpublish_icon(tid);
     db_.block_hash(rec->sha256);
-    std::error_code ec;
-    fs::remove(path_for(tid), ec);
+    store_.remove(title_key(tid));
     return true;
 }
 
 std::string presence_image(Icons& icons, const std::string& base_url, const std::optional<std::string>& title_id,
                            const std::optional<std::string>& icon) {
     if (icon && icons.reader_usable(*icon)) return base_url + "/icons/" + *icon + ".jpg";
-    if (title_id && valid_title_id(*title_id) && icons.reader_published_path(*title_id))
+    if (title_id && icons.reader_published(*title_id))
         return base_url + "/icons/" + normalize_title_id(*title_id) + ".jpg";
     return "switch_logo";
 }
