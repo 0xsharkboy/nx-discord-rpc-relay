@@ -14,6 +14,7 @@
 #include "links.hpp"
 #include "presence.hpp"
 #include "rate_limit.hpp"
+#include "refusals.hpp"
 
 namespace relay {
 
@@ -33,6 +34,8 @@ struct Deps {
     std::function<int64_t()> unix_s;  // last_seen_at; defaults to the system clock
     // Distinct keys per console version for the daily log line; nullptr counts nothing.
     VersionCounts* version_counts = nullptr;
+    // Refused requests per error code for the daily log line; nullptr counts nothing.
+    RefusalCounts* refusal_counts = nullptr;
 };
 
 constexpr size_t kMaxPayloadBytes = 262144;

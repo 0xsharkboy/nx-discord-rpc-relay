@@ -494,10 +494,14 @@ void register_routes(httplib::Server& svr, Deps& d) {
         // Why a request was refused. Every error message is a fixed string of the relay, never request
         // data. 404s are left out: scanners make most of them.
         if (res.status >= 400 && res.status != 404) {
+            std::string code = generated_error_code(res.status);
             auto body = json::parse(res.body, nullptr, false);
             if (body.is_object() && body.value("error", json()).is_string() &&
-                body.value("message", json()).is_string())
-                line += ' ' + body["error"].get<std::string>() + ": " + body["message"].get<std::string>();
+                body.value("message", json()).is_string()) {
+                code = body["error"].get<std::string>();
+                line += ' ' + code + ": " + body["message"].get<std::string>();
+            }
+            if (d.refusal_counts) d.refusal_counts->refused(code);
         }
         d.log(line);
     });

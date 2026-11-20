@@ -3,6 +3,6 @@
 
 namespace relay {
 
-std::string_view version() { return "0.1.2"; }
+std::string_view version() { return "0.1.3"; }
 
 }  // namespace relay

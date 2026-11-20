@@ -3,6 +3,9 @@
 
 #include <sqlite3.h>
 
+#include <chrono>
+#include <filesystem>
+#include <iostream>
 #include <stdexcept>
 
 namespace relay {
@@ -111,7 +114,23 @@ User read_user(const Stmt& s) {
     return u;
 }
 
-void migrate(sqlite3* db) {
+// Copies the database, as it is before the migration from `version`, next to it. A copy left by an
+// earlier attempt at the same migration is kept: it is the untouched one. Throws when the copy fails,
+// so no migration runs without one.
+void copy_before_migration(sqlite3* db, const std::string& path, int version) {
+    namespace fs = std::filesystem;
+    const std::string dest = schema_backup_path(path, version);
+    std::error_code ec;
+    if (fs::exists(dest, ec)) return;
+    const std::string tmp = dest + ".tmp";
+    fs::remove(tmp, ec);
+    Stmt(db, "VACUUM INTO ?").text(1, tmp).run();
+    fs::rename(tmp, dest);
+    std::cout << "relay: copied the database to " << dest << " before migrating schema " << version << " to "
+              << kSchemaVersion << std::endl;
+}
+
+void migrate(sqlite3* db, const std::string& path) {
     int version = 0;
     {
         Stmt s(db, "PRAGMA user_version");
@@ -119,6 +138,8 @@ void migrate(sqlite3* db) {
     }
     if (version > kSchemaVersion) throw std::runtime_error("sqlite: database schema is newer");
     if (version == kSchemaVersion) return;
+    // A fresh database holds nothing to keep.
+    if (version > 0 && !path.empty() && path != ":memory:") copy_before_migration(db, path, version);
 
     exec(db, "BEGIN IMMEDIATE");
     try {
@@ -198,7 +219,7 @@ std::unique_ptr<Db> Db::open(const std::string& path) {
     sqlite3_busy_timeout(self->db_, 5000);
     exec(self->db_, "PRAGMA journal_mode=WAL");
     exec(self->db_, "PRAGMA synchronous=NORMAL");
-    migrate(self->db_);
+    migrate(self->db_, path);
     // Opened after the migration, whose VACUUM must be the only connection. A private database
     // (":memory:" or "") cannot be opened twice.
     if (path.empty() || path == ":memory:") {
@@ -485,6 +506,28 @@ std::optional<IconRecord> Db::Reader::unblocked_published_icon(std::string_view 
     s.text(1, title_id);
     if (!s.step()) return std::nullopt;
     return IconRecord{s.col_text(0), s.col_text(1), s.col_i64(2)};
+}
+
+std::string schema_backup_path(const std::string& path, int version) {
+    return path + ".schema-v" + std::to_string(version) + ".bak";
+}
+
+size_t prune_schema_backups(const std::string& path, int64_t max_age_s) {
+    namespace fs = std::filesystem;
+    const fs::path db(path);
+    const std::string prefix = db.filename().string() + ".schema-v";
+    const auto oldest = fs::file_time_type::clock::now() - std::chrono::seconds(max_age_s);
+    size_t removed = 0;
+    std::error_code ec;
+    const fs::path dir = db.has_parent_path() ? db.parent_path() : fs::path(".");
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        const auto name = e.path().filename().string();
+        if (!name.starts_with(prefix) || !e.is_regular_file(ec)) continue;
+        const auto written = e.last_write_time(ec);
+        if (ec || written >= oldest) continue;
+        if (fs::remove(e.path(), ec)) ++removed;
+    }
+    return removed;
 }
 
 }  // namespace relay

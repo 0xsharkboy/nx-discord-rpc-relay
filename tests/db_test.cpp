@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <stdexcept>
 #include <unistd.h>
 #include <string>
+#include <vector>
 
 #include <sqlite3.h>
 
@@ -31,6 +33,16 @@ struct TempDb {
     void cleanup() {
         for (const char* s : {"", "-wal", "-shm"})
             std::filesystem::remove(path.string() + s);
+        for (const auto& backup : backups()) std::filesystem::remove(backup);
+    }
+    // The copies Db::open took before a migration, sorted.
+    std::vector<std::filesystem::path> backups() const {
+        std::vector<std::filesystem::path> out;
+        const std::string prefix = path.filename().string() + ".schema-v";
+        for (const auto& e : std::filesystem::directory_iterator(path.parent_path()))
+            if (e.path().filename().string().starts_with(prefix)) out.push_back(e.path());
+        std::sort(out.begin(), out.end());
+        return out;
     }
     std::unique_ptr<Db> open() const { return Db::open(path.string()); }
     // Runs raw SQL on a second connection, for rows no Db function writes any more.
@@ -638,4 +650,91 @@ TEST_CASE("db: an in-memory database reads through its only connection") {
     db->add_icon_file(kSha, 10);
     REQUIRE(db->reader().user_by_discord_id("1"));
     CHECK(db->reader().icon_usable(kSha));
+}
+
+namespace {
+// A database at schema v3 with one user, as a relay before v0.4.0 left it.
+void make_v3(const TempDb& t) {
+    t.exec("CREATE TABLE users (discord_id TEXT PRIMARY KEY, username TEXT NOT NULL,"
+           " key_hash TEXT NOT NULL UNIQUE, access_sealed BLOB NOT NULL, refresh_sealed BLOB NOT NULL,"
+           " access_expires_at INTEGER NOT NULL, link_broken INTEGER NOT NULL DEFAULT 0,"
+           " last_seen_at INTEGER NOT NULL DEFAULT 0, avatar TEXT,"
+           " identity_checked INTEGER NOT NULL DEFAULT 0);"
+           "CREATE TABLE published_icons (title_id TEXT PRIMARY KEY,"
+           " sha256 TEXT NOT NULL, published_at INTEGER NOT NULL);"
+           "CREATE TABLE votes (title_id TEXT NOT NULL, sha256 TEXT NOT NULL,"
+           " discord_id TEXT NOT NULL, created_at INTEGER NOT NULL,"
+           " PRIMARY KEY (title_id, sha256, discord_id));"
+           "CREATE TABLE blocked_hashes (sha256 TEXT PRIMARY KEY);"
+           "INSERT INTO users VALUES ('1', 'old', 'h1', x'01', x'02', 1000, 0, 777, 'av', 1);"
+           "PRAGMA user_version = 3;");
+}
+
+int64_t scalar_in(const std::filesystem::path& p, const char* sql) {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open_v2(p.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    int64_t out = -1;
+    sqlite3_exec(
+        raw, sql,
+        [](void* o, int, char** vals, char**) {
+            *static_cast<int64_t*>(o) = vals[0] ? std::stoll(vals[0]) : -1;
+            return 0;
+        },
+        &out, nullptr);
+    sqlite3_close(raw);
+    return out;
+}
+}  // namespace
+
+TEST_CASE("db: a migration first copies the database as it was") {
+    TempDb t;
+    make_v3(t);
+    t.open().reset();
+    auto backups = t.backups();
+    REQUIRE(backups.size() == 1);
+    CHECK(backups[0].filename().string() == t.path.filename().string() + ".schema-v3.bak");
+    CHECK(scalar_in(backups[0], "PRAGMA user_version") == 3);
+    CHECK(scalar_in(backups[0], "SELECT COUNT(*) FROM users") == 1);
+    CHECK(scalar_in(backups[0], "SELECT COUNT(*) FROM sqlite_master WHERE name = 'votes'") == 1);
+    CHECK(t.scalar("PRAGMA user_version") == 4);
+
+    // Opening an up to date database copies nothing more.
+    t.open().reset();
+    CHECK(t.backups().size() == 1);
+}
+
+TEST_CASE("db: a fresh database is not copied") {
+    TempDb t;
+    t.open().reset();
+    CHECK(t.backups().empty());
+}
+
+TEST_CASE("db: a copy left by an earlier attempt at the same migration is kept") {
+    TempDb t;
+    make_v3(t);
+    const auto first = t.path.string() + ".schema-v3.bak";
+    { std::ofstream(first) << "the untouched copy"; }
+    t.open().reset();
+    std::ifstream f(first);
+    CHECK(std::string(std::istreambuf_iterator<char>(f), {}) == "the untouched copy");
+    CHECK(t.scalar("PRAGMA user_version") == 4);
+}
+
+TEST_CASE("db: schema copies older than their lifetime are pruned") {
+    TempDb t;
+    make_v3(t);
+    t.open().reset();
+    REQUIRE(t.backups().size() == 1);
+    CHECK(prune_schema_backups(t.path.string(), kSchemaBackupLifetimeS) == 0);
+    CHECK(t.backups().size() == 1);
+    const auto old = std::filesystem::file_time_type::clock::now() - std::chrono::seconds(kSchemaBackupLifetimeS + 60);
+    std::filesystem::last_write_time(t.backups()[0], old);
+    // Other files next to the database are never touched.
+    const auto other = t.path.string() + ".other";
+    { std::ofstream(other) << "x"; }
+    std::filesystem::last_write_time(other, old);
+    CHECK(prune_schema_backups(t.path.string(), kSchemaBackupLifetimeS) == 1);
+    CHECK(t.backups().empty());
+    CHECK(std::filesystem::exists(other));
+    std::filesystem::remove(other);
 }

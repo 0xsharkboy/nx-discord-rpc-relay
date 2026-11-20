@@ -96,6 +96,7 @@ struct Fixture {
     std::unique_ptr<Presence> presence;
     std::unique_ptr<RateLimiter> link_limiter, poll_limiter, icon_limiter, new_icon_limiter;
     VersionCounts version_counts;
+    RefusalCounts refusal_counts;
     std::mutex log_mu;
     std::vector<std::string> log_lines;
     std::unique_ptr<Deps> deps;
@@ -142,7 +143,7 @@ struct Fixture {
                 std::lock_guard lk(log_mu);
                 log_lines.push_back(line);
             },
-            [this] { return now.load() / 1000; }, &version_counts});
+            [this] { return now.load() / 1000; }, &version_counts, &refusal_counts});
         register_routes(svr, *deps);
         port = svr.bind_to_any_port("127.0.0.1");
         REQUIRE(port > 0);
@@ -1298,4 +1299,6 @@ TEST_CASE("api: a refused request logs why, with no request data") {
         if (line.find("GET /nope 404 ") != std::string::npos) CHECK(line.find("not_found") == std::string::npos);
     }
     CHECK(found);
+    // The daily line counts the refusal by its code, and leaves 404s out.
+    CHECK(f.refusal_counts.drain_line() == "relay: refused requests in the last 24 h: invalid_body=1");
 }

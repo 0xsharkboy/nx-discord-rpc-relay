@@ -138,6 +138,11 @@ Stop the relay and back up `./data` (at least `relay.db` with its `-wal` and `-s
 running a new image. A new relay migrates the database schema forward on start, and an older
 image refuses to start on a database written by a newer one, so the backup is the only way back.
 
+As a safety net, the relay also copies `relay.db` to `relay.db.schema-v<N>.bak` in the data directory
+before each schema migration (`N` is the schema it migrates from) and deletes these copies once they
+are 14 days old. To undo a failed upgrade, stop the relay, replace `relay.db` with the copy, delete `relay.db-wal`
+and `relay.db-shm`, and run the previous image.
+
 ## 8. Point your consoles at it
 
 For each console, take the SD card out, and on a PC set `relay_url` in
@@ -174,14 +179,19 @@ consoles older than v0.6.0. Every console can still unlink (`DELETE /v1/me` is n
 A console that is refused is no longer counted, since it is turned away before its key is checked,
 except when it unlinks. On start, the relay logs the minimum it enforces.
 
+Another daily line counts refused requests per error code, for example
+`relay: refused requests in the last 24 h: client_outdated=12 invalid_body=3`. A code that grows
+from one day to the next is worth a look: each refused request is also logged with its reason.
+
 ### Relay and console versions
 
 The relay and the console homebrew have separate version numbers: a relay release does not need a
 console release, and the reverse. Which consoles a relay serves depends on the API and on
 `MIN_CLIENT_VERSION`, not on matching numbers. Each relay release is tagged `vX.Y.Z` in this
-repository, and the relay logs its version on start (`relay 0.1.2 listening on ...`).
+repository, and the relay logs its version on start (`relay 0.1.3 listening on ...`).
 
 | Relay | Consoles served | Notes |
 |-------|-----------------|-------|
+| 0.1.3 | v0.1.0 and newer | Copies the database before a schema migration (kept 14 days). Logs a daily count of refused requests per error code. |
 | 0.1.2 | v0.1.0 and newer | Presence text that is not valid UTF-8 (some game and homebrew names) is repaired instead of refused. Refusals are logged with their reason. |
 | 0.1.1 | v0.1.0 and newer | Every feature up to console v0.7.0, including the badge. Same data layout as 0.1.0. |

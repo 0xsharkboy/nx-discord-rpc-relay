@@ -30,6 +30,15 @@ struct User {
 // last_seen_at is rewritten at most this often per user, to limit writes.
 constexpr int64_t kLastSeenResolutionS = 3600;
 
+// Before a schema migration, Db::open copies the database to schema_backup_path(path, old version),
+// so a failed upgrade can be undone. The copies hold the same data as the database, so they are
+// deleted once older than this.
+constexpr int64_t kSchemaBackupLifetimeS = 14 * 86400;
+std::string schema_backup_path(const std::string& path, int version);
+// Deletes the schema copies of the database at `path` written more than `max_age_s` ago. Returns how
+// many.
+size_t prune_schema_backups(const std::string& path, int64_t max_age_s);
+
 struct IconRecord {
     std::string title_id, sha256;
     int64_t published_at;

@@ -98,7 +98,8 @@ void pump(IPresenceBackend& backend, std::chrono::milliseconds total) {
 }
 
 void background_jobs(Refresher& refresher, Icons& icons, Links& links, Presence& presence,
-                     VersionCounts& version_counts, StopFlag& stop) {
+                     VersionCounts& version_counts, RefusalCounts& refusal_counts, const std::string& db_path,
+                     StopFlag& stop) {
     auto next_refresh = std::chrono::steady_clock::now();
     auto next_expiry = next_refresh;
     auto next_counts = next_refresh + kVersionCountsEvery;
@@ -123,10 +124,17 @@ void background_jobs(Refresher& refresher, Icons& icons, Links& links, Presence&
             } catch (const std::exception& e) {
                 std::cerr << "relay: inactive account sweep failed: " << e.what() << '\n';
             }
+            try {
+                const auto removed = prune_schema_backups(db_path, kSchemaBackupLifetimeS);
+                if (removed != 0) std::cout << "relay: removed " << removed << " old database copy(ies)" << std::endl;
+            } catch (const std::exception& e) {
+                std::cerr << "relay: database copy cleanup failed: " << e.what() << '\n';
+            }
             next_expiry = now + kMaintenanceEvery;
         }
         if (now >= next_counts) {
             std::cout << version_counts.drain_line() << std::endl;
+            std::cout << refusal_counts.drain_line() << std::endl;
             next_counts = now + kVersionCountsEvery;
         }
         stop.wait_for(std::min({next_refresh, next_expiry, next_counts}) - std::chrono::steady_clock::now());
@@ -169,6 +177,7 @@ int main() {
 
     const std::filesystem::path data_dir(cfg.data_dir);
     const auto icons_dir = data_dir / "icons";
+    const std::string db_path = (data_dir / "relay.db").string();
     std::unique_ptr<Db> db;
     try {
         std::filesystem::create_directories(icons_dir);
@@ -179,7 +188,7 @@ int main() {
                 data_dir.lexically_normal());
             if (!rel.empty() && *rel.begin() != "..") std::filesystem::create_directories(home);
         }
-        db = Db::open((data_dir / "relay.db").string());
+        db = Db::open(db_path);
     } catch (const std::exception& e) {
         std::cerr << "relay: cannot prepare the data directory: " << e.what() << '\n';
         return 1;
@@ -207,8 +216,9 @@ int main() {
     RateLimiter icon_limiter(kIconPerHour, kHourMs, unix_ms);
     RateLimiter new_icon_limiter(kNewIconsPerDay, kDayMs, unix_ms);
     VersionCounts version_counts;
+    RefusalCounts refusal_counts;
     Deps deps{cfg, *db, icons, links, presence, link_limiter, poll_limiter, icon_limiter, new_icon_limiter,
-              nullptr, nullptr, unix_s, &version_counts};
+              nullptr, nullptr, unix_s, &version_counts, &refusal_counts};
 
     httplib::Server svr;
     register_routes(svr, deps);
@@ -256,7 +266,7 @@ int main() {
     });
 
     std::thread jobs([&] {
-        background_jobs(refresher, icons, links, presence, version_counts, stop);
+        background_jobs(refresher, icons, links, presence, version_counts, refusal_counts, db_path, stop);
         jobs_done = true;
     });
 

@@ -43,6 +43,11 @@ The relay keeps one SQLite database, `relay.db` in the data directory, with thes
 
 Icons are also written as JPEG files under `icons/` in the data directory, named after their hash.
 
+Before it upgrades the database schema, a new relay copies `relay.db` next to it as
+`relay.db.schema-v<N>.bak`, so a failed upgrade can be undone. A copy holds the same data as the
+database at that time, including accounts deleted since, and is deleted at the first daily cleanup
+once it is 14 days old.
+
 The Discord Social SDK keeps its own files under the process's `HOME` directory, which the Docker
 image places at `/data/home`. Their content is managed by the SDK.
 
@@ -192,13 +197,18 @@ The relay writes to standard output and standard error only.
 - **Request lines:** one per request, with the method, the path, the status code and the duration,
   for example `PUT /v1/presence 204 3ms`. The link id in `/v1/link/{link_id}/poll` is replaced by
   `:id`. Paths of icon routes include the title id. No IP address, header, API key, token or
-  request body is logged.
+  request body is logged. A refused request (other than `404`) ends with its error code and the
+  relay's own message, for example `PUT /v1/presence 400 2ms invalid_body: name must be a string of 1
+  to 128 bytes`; neither contains request data.
 - **Errors:** failures are logged with a short description. Some of them name the Discord user id
   concerned (a failed refresh, a dropped Discord connection, a presence update Discord refused,
   errors reported by the Social SDK).
 - **Maintenance:** the daily cleanup logs how many inactive accounts it deleted, without naming them.
 - **Client versions:** once a day, the number of distinct accounts per console version over the
   last 24 hours, for example `relay: client versions in the last 24 h: 0.6.0=120 0.5.0=14 other=2`.
+  It names no account.
+- **Refused requests:** once a day, the number of refused requests per error code over the last 24
+  hours, for example `relay: refused requests in the last 24 h: client_outdated=12 invalid_body=3`.
   It names no account.
 
 How long these logs are kept depends on the host. With the Compose file in `deploy/`, Docker keeps at
